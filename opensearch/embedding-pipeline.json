@@ -1,0 +1,19 @@
+{
+  "description": "Generates product embeddings during bulk indexing using a locally hosted ONNX model. Running embedding generation inside the ingest pipeline rather than as a separate pass means OpenSearch never receives a document without its vector, so the index is never partially searchable on the semantic path. The model runs in-cluster, so no API key and no per-token cost.",
+  "processors": [
+    {
+      "text_embedding": {
+        "model_id": "__MODEL_ID__",
+        "field_map": {
+          "embedding_source": "embedding"
+        }
+      }
+    },
+    {
+      "remove": {
+        "field": "embedding_source",
+        "description": "The concatenated text exists only to feed the model. Dropping it keeps the stored document lean, since canonical_title and description are already indexed separately."
+      }
+    }
+  ]
+}

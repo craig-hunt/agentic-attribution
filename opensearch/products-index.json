@@ -1,0 +1,115 @@
+{
+  "settings": {
+    "index": {
+      "knn": true,
+      "knn.algo_param.ef_search": 100,
+      "number_of_shards": 2,
+      "number_of_replicas": 0,
+      "refresh_interval": "-1",
+      "translog": {
+        "durability": "async"
+      }
+    },
+    "analysis": {
+      "analyzer": {
+        "product_text": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding", "product_synonyms", "english_stop"]
+        }
+      },
+      "filter": {
+        "english_stop": {
+          "type": "stop",
+          "stopwords": "_english_"
+        },
+        "product_synonyms": {
+          "type": "synonym_graph",
+          "synonyms": [
+            "sneakers, trainers, running shoes",
+            "laptop, notebook computer",
+            "tv, television",
+            "headphones, earphones, headset"
+          ]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "product_id": {
+        "type": "keyword"
+      },
+      "canonical_title": {
+        "type": "text",
+        "analyzer": "product_text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 512
+          }
+        }
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "product_text"
+      },
+      "brand": {
+        "type": "keyword"
+      },
+      "category_id": {
+        "type": "keyword"
+      },
+      "attributes": {
+        "type": "flattened"
+      },
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 384,
+        "method": {
+          "name": "hnsw",
+          "space_type": "cosinesimil",
+          "engine": "faiss",
+          "parameters": {
+            "ef_construction": 256,
+            "m": 16
+          }
+        }
+      },
+      "offer_count": {
+        "type": "integer"
+      },
+      "min_price_cents": {
+        "type": "long"
+      },
+      "max_price_cents": {
+        "type": "long"
+      },
+      "max_commission_bps": {
+        "type": "integer"
+      },
+      "in_stock_anywhere": {
+        "type": "boolean"
+      },
+      "merchant_ids": {
+        "type": "keyword"
+      },
+      "offers": {
+        "type": "nested",
+        "properties": {
+          "listing_id": { "type": "keyword" },
+          "merchant_id": { "type": "keyword" },
+          "listing_title": { "type": "keyword", "index": false },
+          "price_cents": { "type": "long" },
+          "in_stock": { "type": "boolean" },
+          "commission_bps": { "type": "integer" },
+          "deep_link_url": { "type": "keyword", "index": false }
+        }
+      },
+      "indexed_at": {
+        "type": "date"
+      }
+    }
+  }
+}

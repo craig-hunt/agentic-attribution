@@ -1,0 +1,18 @@
+{
+  "description": "Normalizes BM25 and k-NN score distributions before blending them. Raw BM25 scores are unbounded and corpus-dependent while cosine similarity runs 0 to 1, so summing them raw lets BM25 dominate arbitrarily. min_max maps both onto a comparable range first.",
+  "phase_results_processors": [
+    {
+      "normalization-processor": {
+        "normalization": {
+          "technique": "min_max"
+        },
+        "combination": {
+          "technique": "arithmetic_mean",
+          "parameters": {
+            "weights": [0.4, 0.6]
+          }
+        }
+      }
+    }
+  ]
+}

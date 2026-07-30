@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/craig-hunt/agentic-attribution/schemas/assertion.json",
+  "title": "AttributionAssertion",
+  "description": "Cryptographically signed evidence that a publisher's data informed an agent's purchase decision. Minted at search time, consumed once at settlement. The signature covers every field except signature itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "assertion_id",
+    "publisher_id",
+    "product_id",
+    "search_request_id",
+    "issued_at",
+    "expires_at",
+    "commission_bps",
+    "signature"
+  ],
+  "properties": {
+    "assertion_id": {
+      "type": "string",
+      "description": "UUIDv7. Single use. Consumed at settlement and rejected on replay.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "publisher_id": {
+      "type": "string",
+      "description": "The publisher credited with the referral.",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "product_id": {
+      "type": "string",
+      "description": "Canonical product the assertion covers. Binding to canonical rather than listing lets the agent transact with any merchant carrying the product.",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "search_request_id": {
+      "type": "string",
+      "description": "The search that produced this recommendation. Creates the auditable chain from query through payment to ledger entry.",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 UTC."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 UTC. One hour after issue by default. Attribution should reflect a recent decision."
+    },
+    "commission_bps": {
+      "type": "integer",
+      "description": "Basis points. Signed, so neither merchant nor publisher can alter the agreed rate after issuance.",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "signature": {
+      "type": "string",
+      "description": "Ed25519 over the canonical JSON of all other fields, base64. Prefixed 'ed25519:' to make the scheme explicit and prevent algorithm substitution.",
+      "pattern": "^ed25519:[A-Za-z0-9+/]+={0,2}$"
+    }
+  }
+}

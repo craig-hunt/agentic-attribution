@@ -1,0 +1,56 @@
+# Generated catalog. Reproducible from the generator with a fixed seed, so
+# committing hundreds of megabytes of CSV would add no information.
+db/seed/
+
+# Go build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Node
+node_modules/
+.pnp.*
+.yarn/
+
+# TypeScript build output
+worker/dist/
+simulator/dist/
+merchant/dist/
+packages/types/dist/
+*.tsbuildinfo
+
+# PHP
+app/vendor/
+composer.lock
+
+# Cypress artifacts
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+
+# Container volumes
+.docker-data/
+opensearch-data/
+postgres-data/
+
+# Environment and key material. These belong outside the project entirely,
+# not merely ignored: gitignoring prevents committing, not reading. Editor
+# extensions, language servers, AI assistants, and postinstall scripts can
+# all read anything with filesystem access to this directory.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Benchmark output written during runs
+bench/*.json
+
+# Editor and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
