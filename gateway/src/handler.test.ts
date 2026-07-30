@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import type { AttributionAssertion } from '@agentic-attribution/types';
@@ -87,30 +87,107 @@ function withStubbedFetch<T>(captured: Captured, fn: () => Promise<T>, response?
 }
 
 // The portability claim in ADR-0007 rests entirely on handler.ts importing no
-// Node built-in. Discipline alone would not survive the first deadline, so a
-// test enforces it. node.ts is exempt: bridging node:http is its whole purpose.
-test('handler.ts and its dependencies import no Node built-in', () => {
-  const sourceDir = new URL('.', import.meta.url);
-  const exempt = new Set(['node.ts']);
+// Node built-in, so a test enforces it rather than trusting discipline. Walking
+// the import graph rather than a directory listing matters twice over: a nested
+// module would escape a flat scan, and handler.ts imports from
+// @agentic-attribution/types, whose sources live outside this package entirely.
+// A node:crypto import added there would break the deployed Worker while a
+// gateway-only scan stayed green.
+const WORKSPACE_SOURCES: Record<string, URL> = {
+  '@agentic-attribution/types': new URL('../../packages/types/src/index.ts', import.meta.url),
+};
 
-  const offenders: string[] = [];
+function resolveImport(specifier: string, fromFile: URL): URL | null {
+  const workspace = WORKSPACE_SOURCES[specifier];
+  if (workspace) {
+    return workspace;
+  }
 
-  for (const file of readdirSync(sourceDir)) {
-    if (!file.endsWith('.ts') || file.endsWith('.test.ts') || exempt.has(file)) {
+  if (!specifier.startsWith('.')) {
+    // A bare specifier that is not a workspace package resolves into
+    // node_modules, which no Workers-bound module should reach for anyway and
+    // which this test deliberately leaves to the bundler to reject.
+    return null;
+  }
+
+  // Source files import with a .js extension under NodeNext resolution while
+  // the files on disk carry .ts.
+  return new URL(specifier.replace(/\.js$/, '.ts'), fromFile);
+}
+
+function collectImportGraph(entry: URL): Map<string, string> {
+  const sources = new Map<string, string>();
+  const queue = [entry];
+
+  while (queue.length > 0) {
+    const current = queue.pop();
+    if (!current || sources.has(current.pathname)) {
       continue;
     }
 
-    const source = readFileSync(new URL(file, sourceDir), 'utf8');
+    let source: string;
+    try {
+      source = readFileSync(current, 'utf8');
+    } catch {
+      continue;
+    }
 
-    if (/from\s+['"]node:/.test(source) || /require\(['"]node:/.test(source)) {
-      offenders.push(file);
+    sources.set(current.pathname, source);
+
+    for (const match of source.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)) {
+      const specifier = match[1];
+      if (!specifier) {
+        continue;
+      }
+
+      const resolved = resolveImport(specifier, current);
+      if (resolved) {
+        queue.push(resolved);
+      }
     }
   }
+
+  return sources;
+}
+
+test('nothing reachable from handler.ts imports a Node built-in', () => {
+  const graph = collectImportGraph(new URL('./handler.ts', import.meta.url));
+
+  // Guards against a walker that silently resolves nothing and passes by
+  // scanning an empty set. handler.ts plus the shared package is the floor.
+  assert.ok(
+    graph.size >= 2,
+    `import graph resolved only ${graph.size} file(s); the walker is not following imports`,
+  );
+
+  const reachesSharedPackage = [...graph.keys()].some((path) => path.includes('/packages/types/'));
+  assert.ok(reachesSharedPackage, 'the walker never reached @agentic-attribution/types');
+
+  const offenders = [...graph.entries()]
+    .filter(([, source]) => /from\s+['"]node:/.test(source) || /require\(['"]node:/.test(source))
+    .map(([path]) => path);
 
   assert.deepEqual(
     offenders,
     [],
-    'these files import a Node built-in and would fail to deploy to Workers',
+    'these files are reachable from handler.ts and import a Node built-in, so the Worker build would fail',
+  );
+});
+
+// node.ts is the deliberate exception: bridging node:http is its entire
+// purpose. Asserting that it does import a built-in keeps the exemption honest,
+// because a node.ts that stopped needing Node would mean the adapter is dead
+// code rather than that the rule got stricter.
+test('the Node adapter is the only file permitted to import node built-ins', () => {
+  const adapter = readFileSync(new URL('./node.ts', import.meta.url), 'utf8');
+
+  assert.match(adapter, /from\s+['"]node:http['"]/);
+  assert.equal(
+    collectImportGraph(new URL('./handler.ts', import.meta.url)).has(
+      new URL('./node.ts', import.meta.url).pathname,
+    ),
+    false,
+    'handler.ts must not reach node.ts, or the adapter would ship to Workers',
   );
 });
 
@@ -284,4 +361,60 @@ test('hop-by-hop headers are not forwarded to the origin', async () => {
   assert.equal(captured.headers?.get('connection'), null);
   assert.equal(captured.headers?.get('host'), null);
   assert.equal(captured.headers?.get('x-keep-me'), 'yes');
+});
+
+// The Node adapter caps body size, but Workers invokes handler.ts with no
+// adapter in front of it, so the limit has to live here or the deployed isolate
+// has none at all.
+test('an oversized body is refused before any origin is contacted', async () => {
+  const captured: Captured = {};
+  const oversized = 'x'.repeat(300 * 1024);
+
+  const response = await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, { method: 'POST', body: oversized }),
+      env,
+    ),
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json() as { reason: string }).reason, 'body_too_large');
+  assert.equal(captured.url, undefined, 'an oversized body must never reach an origin');
+});
+
+// Content-Length can be absent under chunked encoding and can simply lie, so
+// the header check is an optimization rather than the enforcement mechanism.
+test('an oversized body is refused even when Content-Length understates it', async () => {
+  const captured: Captured = {};
+
+  const response = await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, {
+        method: 'POST',
+        headers: { 'content-length': '10' },
+        body: 'x'.repeat(300 * 1024),
+      }),
+      env,
+    ),
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal(captured.url, undefined);
+});
+
+test('a body at the limit still passes through', async () => {
+  const captured: Captured = {};
+
+  const response = await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, {
+        method: 'POST',
+        body: 'x'.repeat(1024),
+      }),
+      env,
+    ),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(captured.body?.length, 1024);
 });

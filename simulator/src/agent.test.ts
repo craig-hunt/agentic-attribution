@@ -214,3 +214,57 @@ test('a rejected purchase surfaces the status and body', async () => {
       (error.body as { reason: string }).reason === 'assertion_reused',
   );
 });
+
+// A gateway, load balancer, or proxy can answer with plain text or an HTML
+// error page. Calling response.json() on that throws a SyntaxError that
+// discards the status and body AgentError exists to carry.
+test('a non-JSON error body preserves the status and the raw text', async () => {
+  const agent = new Agent({
+    gatewayUrl: 'http://g.test',
+    account,
+    fetchImpl: (async () =>
+      new Response('<html><body>502 Bad Gateway</body></html>', {
+        status: 502,
+        headers: { 'Content-Type': 'text/html' },
+      })) as typeof globalThis.fetch,
+  });
+
+  await assert.rejects(
+    () => agent.completePurchase('prod_a', assertion('prod_a'), {}),
+    (error: unknown) =>
+      error instanceof AgentError &&
+      error.status === 502 &&
+      typeof error.body === 'string' &&
+      error.body.includes('502 Bad Gateway'),
+  );
+});
+
+test('an empty error body does not throw', async () => {
+  const agent = new Agent({
+    gatewayUrl: 'http://g.test',
+    account,
+    fetchImpl: (async () => new Response('', { status: 504 })) as typeof globalThis.fetch,
+  });
+
+  await assert.rejects(
+    () => agent.completePurchase('prod_a', assertion('prod_a'), {}),
+    (error: unknown) => error instanceof AgentError && error.status === 504,
+  );
+});
+
+test('a non-JSON body on the search and challenge paths behaves the same way', async () => {
+  const plain = (async () =>
+    new Response('upstream unavailable', { status: 503 })) as typeof globalThis.fetch;
+
+  const agent = new Agent({ gatewayUrl: 'http://g.test', account, fetchImpl: plain });
+
+  await assert.rejects(
+    () => agent.search('shoes', 'pub_0001'),
+    (error: unknown) => error instanceof AgentError && error.body === 'upstream unavailable',
+  );
+
+  await assert.rejects(
+    () => agent.requestChallenge('prod_a'),
+    (error: unknown) => error instanceof AgentError && error.body === 'upstream unavailable',
+  );
+});

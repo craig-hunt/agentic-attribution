@@ -38,6 +38,13 @@ const STRIPPED_REQUEST_HEADERS = new Set(['host', 'content-length', 'connection'
 
 const ORIGIN_TIMEOUT_MS = 30_000;
 
+// Enforced here rather than in the Node adapter alone. Workers invokes this
+// module directly with no adapter in front of it, so a limit that lived only in
+// node.ts would protect the local demo and leave the deployed isolate open to
+// memory exhaustion from an oversized POST. A search body carries a query and a
+// publisher ID; a purchase body carries a product ID. Neither approaches this.
+const MAX_BODY_BYTES = 256 * 1024;
+
 function json(body: unknown, status: number, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...JSON_HEADERS, ...headers } });
 }
@@ -51,6 +58,56 @@ function decodeHeaderJson<T>(encoded: string): T {
   }
 
   return JSON.parse(new TextDecoder().decode(bytes)) as T;
+}
+
+/**
+ * Reads the body with a hard ceiling, returning null when the caller exceeds
+ * it. Content-Length gets checked first as a cheap rejection, then the stream
+ * is counted as it arrives, because Content-Length can be absent under chunked
+ * encoding and can simply lie. Trusting the header alone would leave the limit
+ * advisory.
+ */
+async function readBoundedText(request: Request): Promise<string | null> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) > MAX_BODY_BYTES) {
+    return null;
+  }
+
+  if (!request.body) {
+    return '';
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    total += value.byteLength;
+
+    if (total > MAX_BODY_BYTES) {
+      // Cancelling releases the connection rather than draining a body the
+      // gateway has already decided to refuse.
+      await reader.cancel();
+      return null;
+    }
+
+    chunks.push(value);
+  }
+
+  const joined = new Uint8Array(total);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return new TextDecoder().decode(joined);
 }
 
 function forwardableHeaders(source: Headers): Headers {
@@ -124,7 +181,13 @@ export async function handle(
     return json({ error: 'method not allowed' }, 405);
   }
 
-  const body = await request.text();
+  const body = await readBoundedText(request);
+  if (body === null) {
+    return json(
+      { error: `request body exceeds ${MAX_BODY_BYTES} bytes`, reason: 'body_too_large' },
+      413,
+    );
+  }
 
   if (url.pathname === ROUTE.Search) {
     return proxy(request, `${env.SEARCH_URL}${ROUTE.Search}`, body);

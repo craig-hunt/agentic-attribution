@@ -78,6 +78,22 @@ export class AgentError extends Error {
   }
 }
 
+/**
+ * Reads an error body without assuming it parses as JSON. A gateway, a load
+ * balancer, or a proxy in front of either can answer with plain text or an HTML
+ * error page, and calling response.json() on that throws a SyntaxError that
+ * discards the status and body the AgentError exists to carry.
+ */
+async function readErrorBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 function encodeHeaderJson(value: unknown): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value))));
 }
@@ -152,7 +168,7 @@ export class Agent {
     });
 
     if (!response.ok) {
-      throw new AgentError('search failed', response.status, await response.text());
+      throw new AgentError('search failed', response.status, await readErrorBody(response));
     }
 
     return (await response.json()) as SearchResponse;
@@ -174,7 +190,7 @@ export class Agent {
       throw new AgentError(
         `expected 402 Payment Required, got ${response.status}`,
         response.status,
-        await response.text(),
+        await readErrorBody(response),
       );
     }
 
@@ -253,7 +269,7 @@ export class Agent {
     });
 
     if (!response.ok) {
-      throw new AgentError('purchase rejected', response.status, await response.json());
+      throw new AgentError('purchase rejected', response.status, await readErrorBody(response));
     }
 
     return (await response.json()) as Fulfillment;
