@@ -1,0 +1,17 @@
+{
+  "name": "@agentic-attribution/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/node.ts",
+    "dev": "tsx watch src/node.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/*.test.ts",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@agentic-attribution/types": "*"
+  }
+}

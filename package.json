@@ -1,0 +1,26 @@
+{
+  "name": "agentic-attribution",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "workspaces": [
+    "packages/*",
+    "gateway",
+    "facilitator",
+    "merchant",
+    "simulator"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "simulate": "npm run start --workspace @agentic-attribution/simulator"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

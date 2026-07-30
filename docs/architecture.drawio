@@ -19,17 +19,17 @@
         <mxCell id="edgezone" value="EDGE — Cloudflare" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#F59E0B;dashed=1;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#B45309;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="300" y="250" width="220" height="180" as="geometry" />
         </mxCell>
-        <mxCell id="worker" value="&lt;b&gt;Worker&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;x402 gateway&lt;br&gt;assertion verify&lt;br&gt;request routing&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#F59E0B;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+        <mxCell id="worker" value="&lt;b&gt;gateway&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;x402 routing&lt;br&gt;assertion verify&lt;br&gt;&lt;i&gt;Web-standard runtime&lt;/i&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#F59E0B;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="330" y="290" width="160" height="100" as="geometry" />
         </mxCell>
 
-        <mxCell id="gozone" value="DATA LAYER — Go on Fly.io" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#0EA5E9;dashed=1;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#0369A1;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+        <mxCell id="gozone" value="DATA LAYER — Go, Docker Compose" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#0EA5E9;dashed=1;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#0369A1;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="600" y="180" width="400" height="330" as="geometry" />
         </mxCell>
-        <mxCell id="search" value="&lt;b&gt;search-svc&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;hybrid: BM25 + pgvector&lt;br&gt;p50 &amp;lt;25ms · p99 &amp;lt;100ms&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+        <mxCell id="search" value="&lt;b&gt;search-svc&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;hybrid: BM25 + k-NN&lt;br&gt;p50 &amp;lt;25ms · p99 &amp;lt;100ms&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="630" y="220" width="180" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="attrib" value="&lt;b&gt;attribution-svc&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;Ed25519 sign / verify&lt;br&gt;single-use · 1h expiry&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+        <mxCell id="attrib" value="&lt;b&gt;attribution assertion&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;Ed25519 · single-use · 1h&lt;br&gt;&lt;i&gt;minted in search-svc&lt;br&gt;verified locally everywhere&lt;/i&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="630" y="310" width="180" height="70" as="geometry" />
         </mxCell>
         <mxCell id="settle" value="&lt;b&gt;settlement-svc&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;402 challenge · verify&lt;br&gt;settle · commission split&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2FE;strokeColor=#0EA5E9;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
@@ -39,14 +39,14 @@
           <mxGeometry x="840" y="310" width="140" height="90" as="geometry" />
         </mxCell>
 
-        <mxCell id="db" value="&lt;b&gt;Neon Postgres&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 9px;&quot;&gt;&lt;i&gt;system of record&lt;/i&gt;&lt;br&gt;canonical catalog&lt;br&gt;partitioned listings&lt;br&gt;double-entry ledger&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#DCFCE7;strokeColor=#16A34A;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+        <mxCell id="db" value="&lt;b&gt;Postgres&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 9px;&quot;&gt;&lt;i&gt;system of record&lt;/i&gt;&lt;br&gt;canonical catalog&lt;br&gt;partitioned listings&lt;br&gt;double-entry ledger&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#DCFCE7;strokeColor=#16A34A;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="1100" y="270" width="180" height="130" as="geometry" />
         </mxCell>
         <mxCell id="os" value="&lt;b&gt;OpenSearch&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 9px;&quot;&gt;&lt;i&gt;derived index&lt;/i&gt;&lt;br&gt;BM25 + k-NN (HNSW/FAISS)&lt;br&gt;normalization pipeline&lt;br&gt;alias swap rebuilds&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#FFEDD5;strokeColor=#EA580C;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="330" y="80" width="190" height="130" as="geometry" />
         </mxCell>
 
-        <mxCell id="phpzone" value="APPLICATION LAYER — PHP 8.3 on Fly.io" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#8B5CF6;dashed=1;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#6D28D9;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+        <mxCell id="phpzone" value="APPLICATION LAYER — PHP 8.3, Docker Compose" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#8B5CF6;dashed=1;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#6D28D9;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="600" y="570" width="400" height="140" as="geometry" />
         </mxCell>
         <mxCell id="dash" value="&lt;b&gt;Publisher Dashboard&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;attribution chain view&lt;br&gt;commission ledger&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8B5CF6;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
@@ -84,7 +84,7 @@
         <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0EA5E9;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="worker" target="attrib">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e3l" value="2. mint signed&#10;assertion" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#0369A1;labelBackgroundColor=#FFFFFF;" vertex="1" connectable="0" parent="e3">
+        <mxCell id="e3l" value="2. mints in process&#10;(no hop)" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#0369A1;labelBackgroundColor=#FFFFFF;" vertex="1" connectable="0" parent="e3">
           <mxGeometry x="0.2" relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
         </mxCell>
 
@@ -121,7 +121,7 @@
         <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#0EA5E9;strokeWidth=2;endArrow=block;dashed=1;" edge="1" parent="1" source="merchant" target="attrib">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e7l" value="6a. verify assertion" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#0369A1;labelBackgroundColor=#FFFFFF;" vertex="1" connectable="0" parent="e7">
+        <mxCell id="e7l" value="6a. verifies locally&#10;(no hop)" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#0369A1;labelBackgroundColor=#FFFFFF;" vertex="1" connectable="0" parent="e7">
           <mxGeometry x="0.2" relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
         </mxCell>
 

@@ -59,32 +59,43 @@ This demo implements the settlement layer and adds the missing piece: **attribut
 Full diagram: [`docs/architecture.drawio`](docs/architecture.drawio) · Detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ```
-                    ┌─────────────────────────┐
-   AI Agent ───────▶│  Cloudflare Worker      │  x402 gateway
-                    │  (TypeScript, edge)     │  assertion verify
-                    └───────────┬─────────────┘
+                    ┌──────────────────────────┐
+   AI Agent ───────▶│  gateway                 │  x402 routing
+   (simulator)      │  (TypeScript, edge)      │  assertion verify
+                    └───────────┬──────────────┘  rejects forgeries here
                                 │
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                 ▼
-        ┌──────────┐     ┌──────────────┐  ┌──────────────┐
-        │ search   │     │ attribution  │  │ settlement   │   Go / Fly.io
-        │ svc      │     │ svc          │  │ svc          │
-        └────┬─────┘     └──────┬───────┘  └──────┬───────┘
-             │                  │                 │
-             ▼                  └────────┬────────┘
-    ┌──────────────────┐                 ▼
-    │  OpenSearch      │     ┌───────────────────────┐
-    │  hybrid search   │◀────│ Postgres              │  canonical catalog
-    │  BM25 + k-NN     │     │ system of record      │  merchant listings
-    │  (derived index) │     │ + commission ledger   │  double-entry
-    └──────────────────┘     └───────────────────────┘
-         rebuilt from Postgres via alias swap
+              ┌─────────────────┴─────────────────┐
+              ▼                                   ▼
+        ┌──────────┐                       ┌──────────────┐
+        │ search   │                       │  merchant    │  402 challenge
+        │ svc      │  Go                   │ (TypeScript) │  verify · fulfil
+        └────┬─────┘  mints assertions     └──────┬───────┘
+             │        in process                  │
+             ▼                                    ▼
+    ┌──────────────────┐              ┌───────────────────────┐
+    │  OpenSearch      │              │  settlement svc       │  Go
+    │  hybrid search   │              │  verify · claim       │  x402 state
+    │  BM25 + k-NN     │              │  settle · split       │  machine
+    │  (derived index) │              └───┬───────────────┬───┘
+    └──────────────────┘                  │               │
+             ▲                            ▼               ▼
+             │                   ┌────────────────┐  ┌──────────────┐
+             │                   │  facilitator   │  │  Postgres    │
+             │                   │  mock by       │  │  system of   │
+             │                   │  default       │  │  record      │
+             │                   └────────────────┘  │  + ledger    │
+             └───────────────────────────────────────┤  double-entry│
+                  rebuilt from Postgres              └──────┬───────┘
+                  via atomic alias swap                     │
+                                                            ▼
+                                                    ┌──────────────┐
+                                                    │ PHP 8.3      │
+                                                    │ publisher    │
+                                                    │ dashboard    │
+                                                    └──────────────┘
 
-        ┌──────────────────┐          ┌──────────────────┐
-        │ PHP 8.3          │          │ Simulated        │
-        │ publisher        │          │ merchant         │
-        │ dashboard        │          │ endpoint         │
-        └──────────────────┘          └──────────────────┘
+Everything above runs under Docker Compose on one machine. No account,
+no wallet, no funded testnet balance, no hosted dependency.
 ```
 
 ---
@@ -95,7 +106,7 @@ Full diagram: [`docs/architecture.drawio`](docs/architecture.drawio) · Detail: 
 
 Each layer optimizes for different properties. The edge optimizes for cold-start time and correctness against complex protocol payloads. Application layers optimize for developer velocity and template ergonomics. Data-path services optimize for throughput, memory footprint, concurrency, and predictable latency. Forcing one language across all three compromises whichever layers lose the argument.
 
-The Cloudflare Worker runs TypeScript because x402 payload structures nest, carry scheme-dependent optional fields, and get constructed in one place then verified in another. The dashboard runs PHP because that is where application-layer work belongs. Search, attribution, and settlement run Go because they sit on the latency-sensitive path where a 15MB static binary handling thousands of concurrent connections on modest memory beats the alternative.
+The edge gateway runs TypeScript because x402 payload structures nest, carry scheme-dependent optional fields, and get constructed in one place then verified in another. The dashboard runs PHP because that is where application-layer work belongs. Search, attribution, and settlement run Go because they sit on the latency-sensitive path where a 15MB static binary handling thousands of concurrent connections on modest memory beats the alternative.
 
 ---
 

@@ -16,13 +16,15 @@ Four principles drove every structural decision in this system.
 
 ## Components
 
-### Cloudflare Worker (edge)
+### gateway (TypeScript, edge-deployable)
 
 **Responsibilities:** x402 protocol gateway, attribution assertion verification, request routing.
 
-Runs at the edge because the 402 challenge-response adds a round trip, and terminating that exchange close to the caller keeps total latency acceptable. The Worker verifies assertion signatures before any origin request, so invalid assertions never consume backend capacity.
+Belongs at the edge because the 402 challenge-response adds a round trip, and terminating that exchange close to the caller keeps total latency acceptable. The gateway verifies assertion signatures before any origin request, so invalid assertions never consume backend capacity.
 
-**Why not origin:** an agent that fails payment verification should burn edge compute, not a database connection.
+**Why not origin:** an agent that fails verification should burn edge compute rather than a database connection.
+
+**Runtime.** The handler uses only `Request`, `Response`, `URL`, `fetch`, and `crypto.subtle`, so one module runs under Node in the local Docker stack and deploys to Cloudflare Workers unchanged. A test fails the build if any file outside the Node adapter imports a Node built-in. See ADR-0007.
 
 ### search-svc (Go)
 
@@ -30,17 +32,23 @@ Runs at the edge because the 402 challenge-response adds a round trip, and termi
 
 Issues a single OpenSearch query containing both a `multi_match` BM25 subquery and a `knn` vector subquery, processed through a **search pipeline with a normalization processor**. Raw BM25 scores are unbounded and corpus-dependent while cosine similarity runs 0 to 1, so blending them without normalization lets BM25 dominate arbitrarily. The pipeline applies `min_max` normalization and `arithmetic_mean` combination with configurable weights.
 
-Returns products alongside a request identifier the attribution service binds assertions to.
+Mints an Ed25519 assertion per product in process and returns them alongside the results, each bound to the search request identifier that produced them.
 
 **Latency budget:** p50 under 25ms, p99 under 100ms against 1M listings. Published in `bench/results.md`.
 
 **Query embedding** is the one inference call on this path, cached aggressively on query-text hash. Product embeddings are precomputed at ingest.
 
-### attribution-svc (Go)
+### Attribution: minted in one place, verified in three
 
-**Responsibilities:** mint and verify attribution assertions.
+No standalone attribution service exists, and that absence is a decision rather than an omission.
 
-Signs assertions with Ed25519. An assertion binds publisher ID, product ID, search request ID, issue timestamp, and expiry. Verification checks signature validity, expiry, and replay (assertion IDs are single-use, tracked in Redis-equivalent state).
+**Minting** happens inside search-svc, in process. Only the minting party needs the private key, and minting sits directly on the sub-100ms serving path where a network hop would spend budget for nothing.
+
+**Verification** happens at the gateway, again at the merchant, and authoritatively at settlement. All three run the same Ed25519 check against the published public key, so none needs to ask the platform anything. Asymmetric signing is what makes that possible: a verifier holds nothing that lets it forge, and it needs no permission to verify.
+
+Routing verification through an HTTP service would add a hop on the payment path, create a second implementation to keep byte-compatible with Go, and reveal a merchant's purchase intent to the platform in real time before the buyer commits. Local verification leaks nothing. `docs/PRODUCTIONALIZING.md` records the one case that would justify a hosted verifier: a merchant unable to implement Ed25519 at all.
+
+**Replay** cannot be answered locally, because it requires durable state. The `consumed_assertions` table in Postgres holds it and settlement checks it inside the same transaction that records the settlement, which is what makes the single-use guarantee hold under concurrency. See ADR-0003.
 
 **Why Ed25519:** small signatures (64 bytes), fast verification, no parameter-choice footguns. Signature size matters because the assertion travels inside a payment payload with size constraints.
 
@@ -64,7 +72,7 @@ PHP 8.3 with a thin router. No framework, because the demo's application surface
 
 Accepts purchase requests, returns 402 with payment requirements, verifies the attribution assertion, and confirms fulfillment. Deliberately simple. The demo proves the attribution mechanism, not merchant integration.
 
-### Neon Postgres — the system of record
+### Postgres, the system of record
 
 Three logical concerns in one instance:
 
@@ -118,11 +126,11 @@ Mappings are largely immutable, so changing a field type requires a reindex. Thi
 ### Search path (latency critical)
 
 ```
-Agent → Worker → search-svc → OpenSearch (BM25 + k-NN via normalization pipeline)
-                      ↓                              ↓
-              attribution-svc mints         results → search-svc → Worker → Agent
-              assertion, returned
-              alongside results
+Agent → gateway → search-svc → OpenSearch (BM25 + k-NN via normalization pipeline)
+                       ↓                             ↓
+               search-svc mints an          results → search-svc → gateway → Agent
+               assertion per product,
+               returned alongside results
 ```
 
 Postgres is not on this path. Search reads exclusively from the derived index, which is precisely why ingest write pressure cannot degrade search latency.
@@ -132,13 +140,15 @@ Precomputed product embeddings mean this path runs zero inference except the que
 ### Purchase path
 
 ```
-Agent → merchant (402 challenge)
-Agent → builds PaymentPayload + attaches assertion → merchant
-merchant → attribution-svc (verify assertion)
-merchant → settlement-svc (verify + settle x402)
-settlement-svc → facilitator /verify → /settle → Base Sepolia
-settlement-svc → ledger write (merchant debit, platform fee, publisher credit)
-merchant → Agent (resource + PAYMENT-RESPONSE)
+Agent → gateway → merchant                      402 challenge, no assertion yet
+Agent → gateway                                  signs EIP-3009, attaches assertion
+         └─ verifies assertion, rejects forgeries before any origin is touched
+gateway → merchant                               verifies again, checks price and payee
+merchant → settlement-svc                        verifies again, authoritatively
+settlement-svc → facilitator /verify → /settle   mock by default, Coinbase when configured
+settlement-svc → Postgres                        claim assertion + pending settlement, one tx
+settlement-svc → Postgres                        confirm + balanced ledger entries, one tx
+merchant → gateway → Agent                       fulfillment + PAYMENT-RESPONSE
 ```
 
 ### Ingest path (throughput critical, off the serving path)
@@ -194,12 +204,17 @@ Full rationale in [ADR-0003](adr/0003-attribution-assertion-design.md).
 
 ## Deployment topology
 
-| Component | Platform | Rationale |
-|---|---|---|
-| Worker | Cloudflare | Edge termination of the 402 exchange |
-| Go services | Fly.io | Small containers, fast deploys, regional placement near the database |
-| PHP app | Fly.io | Same platform, simpler operations |
-| Postgres | Neon | Serverless, pgvector support, branching for test data |
-| Settlement | Base Sepolia | Real protocol, testnet value |
+**The demo deploys nowhere.** Everything runs under Docker Compose on one machine: `git clone`, `docker compose up`, `make demo`, with no account, no credential, no wallet, and no funded testnet balance. Nothing in this repository points at infrastructure the author controls, so no clone can execute against someone else's deployment. See ADR-0007.
 
-**Why Fly.io over Lambda or Cloud Run:** persistent connections to Postgres. Serverless functions and connection pooling to Postgres fight each other, and the workaround (external poolers) adds a hop to the latency budget.
+| Component | Local | Rationale |
+|---|---|---|
+| gateway | Node container | Web-standard handler; the same module deploys to Cloudflare Workers unchanged |
+| Go services | Distroless containers | Static binaries under 15MB, no runtime to patch |
+| PHP app | php:8.3 container | Application layer, low request volume |
+| Postgres | postgres:17 container | System of record, including the commission ledger |
+| OpenSearch | opensearch:2 container | Derived index, k-NN via HNSW and FAISS, ONNX embeddings through ML Commons |
+| Facilitator | Node container | Mock by default; set `X402_FACILITATOR_URL` for Coinbase and Base Sepolia |
+
+**Why local rather than hosted.** Hosted free tiers do not fit this workload. Neon's free tier caps at 512MB against roughly 450MB of catalog plus staging tables, and no free hosted OpenSearch tier exists at all. Paying for either buys nothing a reviewer values, and a demo that costs money to keep alive stops working the moment it stops being paid for.
+
+**What a real deployment would change.** Go services take small containers on a platform holding persistent connections to Postgres, which rules out plain Lambda and Cloud Run: serverless functions and Postgres connection pooling fight each other, and external poolers add a hop to the latency budget. The gateway goes to Cloudflare unchanged. `docs/PRODUCTIONALIZING.md` covers the rest.

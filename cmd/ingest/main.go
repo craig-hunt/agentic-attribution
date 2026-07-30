@@ -27,15 +27,15 @@ const (
 
 func main() {
 	var (
-		postgresDSN  = flag.String("postgres", envOr("POSTGRES_DSN", defaultPostgresDSN), "Postgres connection string")
+		postgresDSN   = flag.String("postgres", envOr("POSTGRES_DSN", defaultPostgresDSN), "Postgres connection string")
 		openSearchURL = flag.String("opensearch", envOr("OPENSEARCH_URL", defaultOpenSearch), "OpenSearch base URL")
-		seedDir      = flag.String("seed", "db/seed", "directory holding the generated CSV files")
-		mapping      = flag.String("mapping", "opensearch/products-index.json", "index mapping and settings")
-		embedPipe    = flag.String("embed-pipeline", "opensearch/embedding-pipeline.json", "ingest pipeline template")
-		searchPipe   = flag.String("search-pipeline", "opensearch/hybrid-search-pipeline.json", "hybrid search pipeline")
-		version      = flag.String("version", time.Now().UTC().Format("20060102150405"), "index version suffix")
-		skipModel    = flag.Bool("skip-model", false, "reuse an already-registered embedding model")
-		dropRetired  = flag.Bool("drop-retired", false, "delete the previous index and partitions after a successful swap")
+		seedDir       = flag.String("seed", "db/seed", "directory holding the generated CSV files")
+		mapping       = flag.String("mapping", "opensearch/products-index.json", "index mapping and settings")
+		embedPipe     = flag.String("embed-pipeline", "opensearch/embedding-pipeline.json", "ingest pipeline template")
+		searchPipe    = flag.String("search-pipeline", "opensearch/hybrid-search-pipeline.json", "hybrid search pipeline")
+		version       = flag.String("version", time.Now().UTC().Format("20060102150405"), "index version suffix")
+		skipModel     = flag.Bool("skip-model", false, "reuse an already-registered embedding model")
+		dropRetired   = flag.Bool("drop-retired", false, "delete the previous index and partitions after a successful swap")
 	)
 	flag.Parse()
 
