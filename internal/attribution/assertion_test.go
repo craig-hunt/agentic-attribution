@@ -1,8 +1,11 @@
 package attribution
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,5 +257,79 @@ func TestCalculateCommissionPublisherAbsorbsTruncationRemainder(t *testing.T) {
 	}
 	if got.PublisherAmountCents != 5 {
 		t.Errorf("publisher amount = %d, want 5", got.PublisherAmountCents)
+	}
+}
+
+// The signing payload crosses a language boundary, so its exact bytes form part
+// of the contract rather than an implementation detail. This pins them.
+func TestCanonicalizeMatchesJavaScriptStringify(t *testing.T) {
+	a := Assertion{
+		AssertionID:     "a1",
+		PublisherID:     "pub-1",
+		ProductID:       "prod-1",
+		SearchRequestID: "sr-1",
+		IssuedAt:        "2026-07-30T12:00:00Z",
+		ExpiresAt:       "2026-07-30T13:00:00Z",
+		CommissionBps:   750,
+		Signature:       "ed25519:ignored",
+	}
+
+	got, err := canonicalize(a)
+	if err != nil {
+		t.Fatalf("canonicalize returned %v", err)
+	}
+
+	const want = `{"assertion_id":"a1","publisher_id":"pub-1","product_id":"prod-1",` +
+		`"search_request_id":"sr-1","issued_at":"2026-07-30T12:00:00Z",` +
+		`"expires_at":"2026-07-30T13:00:00Z","commission_bps":750}`
+
+	if string(got) != want {
+		t.Fatalf("canonical bytes diverged from JSON.stringify\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// json.Marshal would escape these three characters and JSON.stringify would
+// not, which is the divergence SetEscapeHTML(false) removes.
+func TestCanonicalizeLeavesHTMLCharactersUnescaped(t *testing.T) {
+	a := Assertion{
+		AssertionID:     "a<1>",
+		PublisherID:     "pub&co",
+		ProductID:       "prod-1",
+		SearchRequestID: "sr-1",
+		IssuedAt:        "2026-07-30T12:00:00Z",
+		ExpiresAt:       "2026-07-30T13:00:00Z",
+		CommissionBps:   750,
+	}
+
+	got, err := canonicalize(a)
+	if err != nil {
+		t.Fatalf("canonicalize returned %v", err)
+	}
+
+	// Comparing against json.Marshal proves the escaping is off rather than
+	// asserting on escape sequences directly. Marshal HTML-escapes by default,
+	// so identical output would mean canonicalize still escapes and the two
+	// languages would sign different bytes for the same assertion.
+	marshaled, err := json.Marshal(unsigned{
+		AssertionID:     a.AssertionID,
+		PublisherID:     a.PublisherID,
+		ProductID:       a.ProductID,
+		SearchRequestID: a.SearchRequestID,
+		IssuedAt:        a.IssuedAt,
+		ExpiresAt:       a.ExpiresAt,
+		CommissionBps:   a.CommissionBps,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned %v", err)
+	}
+
+	if bytes.Equal(got, marshaled) {
+		t.Fatalf("canonicalize still HTML-escapes, so Go and TypeScript sign different bytes:\n%s", got)
+	}
+
+	for _, raw := range []string{`"assertion_id":"a<1>"`, `"publisher_id":"pub&co"`} {
+		if !strings.Contains(string(got), raw) {
+			t.Fatalf("expected %s to survive unescaped:\n%s", raw, got)
+		}
 	}
 }

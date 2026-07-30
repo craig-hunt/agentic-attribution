@@ -92,9 +92,9 @@ func (s *DocumentSource) Stream(
 	indexedAt := time.Now().UTC().Format(time.RFC3339)
 
 	var (
-		batch     []ProductDocument
-		current   *ProductDocument
-		emitted   int64
+		batch   []ProductDocument
+		current *ProductDocument
+		emitted int64
 	)
 
 	flush := func() error {

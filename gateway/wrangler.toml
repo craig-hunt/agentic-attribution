@@ -1,0 +1,35 @@
+# Deploys src/handler.ts to Cloudflare Workers unchanged. Nothing in the demo
+# requires this file: `docker compose up` runs src/node.ts instead, and the
+# stack never contacts Cloudflare. This exists so the portability claim in
+# ADR-0007 can be verified rather than taken on faith.
+#
+# To deploy against your own account:
+#
+#   npx wrangler secret put ATTRIBUTION_PUBLIC_KEY
+#   npx wrangler deploy
+#
+# SEARCH_URL and MERCHANT_URL must then point at reachable origins. The demo
+# defaults address the Docker network and resolve to nothing outside it, which
+# is deliberate: no clone of this repository can execute against infrastructure
+# belonging to whoever wrote it.
+
+name = "agentic-attribution-gateway"
+main = "src/handler.ts"
+compatibility_date = "2026-07-01"
+
+# Brings Workers' Node compatibility surface closer to standard. The gateway
+# imports no Node built-in, so this changes nothing today; it stays set so a
+# future dependency that reaches for one fails loudly at build rather than
+# silently at runtime.
+compatibility_flags = ["nodejs_compat_v2"]
+
+[observability]
+enabled = true
+
+[vars]
+SEARCH_URL = "http://search:8081"
+MERCHANT_URL = "http://merchant:8090"
+
+# ATTRIBUTION_PUBLIC_KEY is set as a secret, never as a var. It is only the
+# public half and forging is impossible with it, but treating key material
+# uniformly means nobody has to decide case by case which half is safe to log.

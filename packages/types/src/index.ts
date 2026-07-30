@@ -133,3 +133,23 @@ export function canonicalizeForSigning(assertion: UnsignedAssertion): string {
 
   return JSON.stringify(ordered);
 }
+
+export {
+  AssertionVerificationError,
+  importVerificationKey,
+  verifyAssertion,
+  type VerificationFailure,
+} from './verify.js';
+
+export {
+  BASE_SEPOLIA,
+  EIP3009_PRIMARY_TYPE,
+  EIP3009_TYPES,
+  NETWORKS,
+  eip712Domain,
+  networkParameters,
+  toTypedMessage,
+  type Eip3009Message,
+  type Eip712Domain,
+  type NetworkParameters,
+} from './eip3009.js';

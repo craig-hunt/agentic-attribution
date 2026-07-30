@@ -47,9 +47,9 @@ type Merchant struct {
 }
 
 type Publisher struct {
-	PublisherID     string
-	Name            string
-	PayoutCurrency  string
+	PublisherID    string
+	Name           string
+	PayoutCurrency string
 }
 
 type Product struct {

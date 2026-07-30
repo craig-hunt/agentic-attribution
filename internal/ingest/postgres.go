@@ -66,10 +66,10 @@ func (l *PostgresLoader) LoadReference(ctx context.Context, seedDir string) ([]P
 	var timings []PhaseTiming
 
 	specs := []struct {
-		phase   string
-		file    string
-		table   string
-		columns []string
+		phase    string
+		file     string
+		table    string
+		columns  []string
 		conflict string
 	}{
 		{

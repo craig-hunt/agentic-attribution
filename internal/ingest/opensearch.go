@@ -18,7 +18,7 @@ const (
 	EmbeddingModelVer   = "1.0.1"
 	EmbeddingDimensions = 384
 
-	ProductsAlias    = "products"
+	ProductsAlias     = "products"
 	EmbeddingPipeline = "product-embedding"
 	SearchPipeline    = "hybrid-search"
 
@@ -99,9 +99,9 @@ func truncate(b []byte, max int) string {
 func (c *OpenSearchClient) EnableLocalModels(ctx context.Context) error {
 	settings := map[string]any{
 		"persistent": map[string]any{
-			"plugins.ml_commons.only_run_on_ml_node":           false,
-			"plugins.ml_commons.model_access_control_enabled":  false,
-			"plugins.ml_commons.native_memory_threshold":       99,
+			"plugins.ml_commons.only_run_on_ml_node":             false,
+			"plugins.ml_commons.model_access_control_enabled":    false,
+			"plugins.ml_commons.native_memory_threshold":         99,
 			"plugins.ml_commons.allow_registering_model_via_url": true,
 		},
 	}
@@ -121,8 +121,8 @@ type taskResponse struct {
 // deploys it. Returns the model_id the ingest pipeline references.
 func (c *OpenSearchClient) RegisterEmbeddingModel(ctx context.Context) (string, error) {
 	register := map[string]any{
-		"name":     EmbeddingModel,
-		"version":  EmbeddingModelVer,
+		"name":         EmbeddingModel,
+		"version":      EmbeddingModelVer,
 		"model_format": "TORCH_SCRIPT",
 	}
 
@@ -296,9 +296,9 @@ func (c *OpenSearchClient) BulkIndex(ctx context.Context, index string, docs []P
 func (c *OpenSearchClient) FinalizeIndex(ctx context.Context, index string) error {
 	restore := map[string]any{
 		"index": map[string]any{
-			"refresh_interval":     "1s",
-			"number_of_replicas":   TargetReplicas,
-			"translog.durability":  "request",
+			"refresh_interval":    "1s",
+			"number_of_replicas":  TargetReplicas,
+			"translog.durability": "request",
 		},
 	}
 

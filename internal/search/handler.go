@@ -45,13 +45,13 @@ type searchPayload struct {
 }
 
 type searchResult struct {
-	SearchRequestID string                   `json:"search_request_id"`
-	Query           string                   `json:"query"`
-	LatencyMillis   int64                    `json:"latency_ms"`
-	SearchTookMs    int                      `json:"opensearch_took_ms"`
-	TotalHits       int64                    `json:"total_hits"`
-	Products        []Product                `json:"products"`
-	Assertions      []attribution.Assertion  `json:"assertions"`
+	SearchRequestID string                  `json:"search_request_id"`
+	Query           string                  `json:"query"`
+	LatencyMillis   int64                   `json:"latency_ms"`
+	SearchTookMs    int                     `json:"opensearch_took_ms"`
+	TotalHits       int64                   `json:"total_hits"`
+	Products        []Product               `json:"products"`
+	Assertions      []attribution.Assertion `json:"assertions"`
 }
 
 func (h *Handler) Routes() *http.ServeMux {

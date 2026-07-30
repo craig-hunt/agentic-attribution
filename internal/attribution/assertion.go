@@ -3,6 +3,7 @@
 package attribution
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -53,8 +54,19 @@ type unsigned struct {
 	CommissionBps   int    `json:"commission_bps"`
 }
 
+// canonicalize must produce bytes identical to the TypeScript
+// canonicalizeForSigning. json.Marshal escapes <, >, and & to <, >,
+// and & for safe HTML embedding; JSON.stringify leaves them alone. An
+// identifier carrying any of those three would then sign in Go and fail to
+// verify in TypeScript, so the encoder turns that escaping off rather than
+// leaving the two languages agreeing only by luck of the input alphabet.
 func canonicalize(a Assertion) ([]byte, error) {
-	return json.Marshal(unsigned{
+	var buf bytes.Buffer
+
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+
+	if err := enc.Encode(unsigned{
 		AssertionID:     a.AssertionID,
 		PublisherID:     a.PublisherID,
 		ProductID:       a.ProductID,
@@ -62,7 +74,13 @@ func canonicalize(a Assertion) ([]byte, error) {
 		IssuedAt:        a.IssuedAt,
 		ExpiresAt:       a.ExpiresAt,
 		CommissionBps:   a.CommissionBps,
-	})
+	}); err != nil {
+		return nil, err
+	}
+
+	// Encode appends a newline that Marshal does not. JSON.stringify emits none
+	// either, so it comes back off.
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 type Signer struct {
