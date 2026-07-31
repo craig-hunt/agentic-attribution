@@ -5,6 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/craig-hunt/agentic-attribution/internal/attribution"
 )
@@ -20,12 +23,85 @@ func NewHandler(svc *Service, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, log: log}
 }
 
+// Read routes serve the publisher dashboard. They live here rather than in a
+// separate service because they read the same rows settlement writes, and a
+// second service owning read access to the ledger would mean two components
+// with opinions about what a confirmed settlement looks like.
 func (h *Handler) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /settle", h.handleSettle)
 	mux.HandleFunc("GET /healthz", h.handleHealth)
+	mux.HandleFunc("GET /publishers", h.handleListPublishers)
+	mux.HandleFunc("GET /publishers/{publisherID}", h.handlePublisherDetail)
+	mux.HandleFunc("GET /settlements/{settlementID}/chain", h.handleChain)
 
 	return mux
+}
+
+const (
+	defaultSettlementPageSize = 25
+	maxSettlementPageSize     = 200
+)
+
+func (h *Handler) handleListPublishers(w http.ResponseWriter, r *http.Request) {
+	publishers, err := h.svc.store.ListPublishers(r.Context())
+	if err != nil {
+		h.log.Error("list publishers", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error(), Reason: "internal_error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"publishers": publishers})
+}
+
+func (h *Handler) handlePublisherDetail(w http.ResponseWriter, r *http.Request) {
+	publisherID := r.PathValue("publisherID")
+
+	summary, err := h.svc.store.PublisherSummary(r.Context(), publisherID)
+	if err != nil {
+		// A missing publisher is a 404 rather than a 500. The dashboard links
+		// to identifiers a user can edit in the address bar.
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error(), Reason: "publisher_not_found"})
+			return
+		}
+
+		h.log.Error("publisher summary", "publisher_id", publisherID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error(), Reason: "internal_error"})
+		return
+	}
+
+	limit := defaultSettlementPageSize
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, convErr := strconv.Atoi(raw); convErr == nil && parsed > 0 {
+			limit = min(parsed, maxSettlementPageSize)
+		}
+	}
+
+	settlements, err := h.svc.store.RecentSettlements(r.Context(), publisherID, limit)
+	if err != nil {
+		h.log.Error("recent settlements", "publisher_id", publisherID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error(), Reason: "internal_error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "settlements": settlements})
+}
+
+func (h *Handler) handleChain(w http.ResponseWriter, r *http.Request) {
+	chain, err := h.svc.store.Chain(r.Context(), r.PathValue("settlementID"))
+	if err != nil {
+		if errors.Is(err, ErrSettlementNotFound) {
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error(), Reason: "settlement_not_found"})
+			return
+		}
+
+		h.log.Error("chain", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error(), Reason: "internal_error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, chain)
 }
 
 type errorResponse struct {

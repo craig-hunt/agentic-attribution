@@ -126,21 +126,50 @@ This demo implements the ingest-side discipline that matters at volume: bulk ind
 
 ## Running it
 
+Everything runs on one machine. **Docker and `make` are the only prerequisites.**
+No account, no API key, no wallet, no funded testnet balance, no hosted
+dependency.
+
 ```bash
-# Generate the dataset (~1M listings across 150K canonical products)
-go run ./cmd/generator --seed 42 --canonical 150000 --out db/seed
-
-# Bring up the stack
-docker compose up -d
-
-# Load Postgres and rebuild the OpenSearch index
-go run ./cmd/ingest
-
-# Run the agent simulation end to end
-make demo
+make keys     # generate the signing keypair, once, outside the repository
+make up       # build and start every service
+make seed     # generate the catalog, load Postgres, build the OpenSearch index
+make demo     # drive the agent through search, 402, payment, settlement, replay
 ```
 
-Full setup: [`docs/RUNNING.md`](docs/RUNNING.md)
+Then open the publisher dashboard at **http://localhost:8000**.
+
+Installing Go, Node, and PHP on the host is optional and buys you only the
+ability to run the test suites there. `make keys` uses a host Go toolchain when
+it finds one and otherwise builds a small container to generate the keypair, so
+the first run takes about a minute longer without Go and works either way.
+
+### Keys
+
+**Nothing is shared and nothing is distributed.** `make keys` generates a fresh
+Ed25519 keypair on your machine. Every clone is its own platform with its own
+signing identity, so no credential travels with the repository and none needs
+requesting from anyone.
+
+**It writes outside the working tree**, to `~/.agentic-attribution/env` by
+default, and never into the project. Gitignoring a key file stops it being
+committed and does nothing to stop it being read: editor extensions, language
+servers, AI assistants, and any dependency with a postinstall script all hold
+filesystem access to a project directory.
+
+The containers never read that file. Compose reads it on the host and passes
+individual values into each service, which is how the private half reaches only
+the service that mints while the three services that verify receive the public
+half alone.
+
+Point `ENV_FILE` anywhere else if you keep secrets somewhere specific:
+
+```bash
+export ENV_FILE=/path/to/your/secrets/agentic-attribution.env
+```
+
+Full setup, troubleshooting, and how to settle against live Base Sepolia:
+[`docs/RUNNING.md`](docs/RUNNING.md)
 
 ---
 
