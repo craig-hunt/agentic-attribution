@@ -10,7 +10,7 @@ use function Agentic\Dashboard\e;
 <p class="sub">Every publisher earning commission through agent-mediated purchases.</p>
 
 <?php if ($publishers === []): ?>
-  <div class="err">No publishers yet. Run <code>go run ./cmd/ingest</code> to load the catalog.</div>
+  <div class="err">No publishers yet. Run <code>make seed</code> to load the catalog.</div>
 <?php else: ?>
   <table>
     <thead><tr><th>Publisher</th><th>Identifier</th><th>Payout currency</th></tr></thead>

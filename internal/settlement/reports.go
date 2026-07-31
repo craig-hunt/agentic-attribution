@@ -127,12 +127,17 @@ func (s *Store) PublisherSummary(ctx context.Context, publisherID string) (Publi
 			COALESCE(a.assertion_count, 0)
 		FROM publishers p
 		LEFT JOIN (
+			-- Every aggregate carries an explicit cast. Postgres returns
+			-- numeric from SUM over a bigint column and from AVG over any
+			-- numeric type, and pgx refuses to scan numeric into a Go integer.
+			-- Without these casts the endpoint fails at scan time rather than
+			-- at compile time, which is the worst place to find out.
 			SELECT publisher_id,
-			       COUNT(*)                      AS settlement_count,
-			       SUM(gross_amount_cents)       AS gross_cents,
-			       SUM(publisher_amount_cents)   AS publisher_cents,
-			       SUM(platform_fee_cents)       AS platform_cents,
-			       ROUND(AVG(commission_bps))    AS avg_bps
+			       COUNT(*)                              AS settlement_count,
+			       SUM(gross_amount_cents)::bigint       AS gross_cents,
+			       SUM(publisher_amount_cents)::bigint   AS publisher_cents,
+			       SUM(platform_fee_cents)::bigint       AS platform_cents,
+			       ROUND(AVG(commission_bps))::int       AS avg_bps
 			FROM settlements
 			WHERE status = $2
 			GROUP BY publisher_id

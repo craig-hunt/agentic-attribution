@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help keys up seed demo dashboard down clean logs ps test test-go test-ts test-php lint fixture
+.PHONY: help keys require-keys up seed demo dashboard down clean logs ps test test-go test-ts test-php lint fixture
 
 # Key material lives outside the working tree, and the Makefile passes its
 # location to compose explicitly rather than relying on the ./.env compose
@@ -11,7 +11,9 @@
 #   make up ENV_FILE=/mnt/c/Users/HCrai/.agent-secrets/agentic-attribution.env
 ENV_FILE ?= $(HOME)/.agentic-attribution/env
 
-COMPOSE := docker compose --env-file $(ENV_FILE)
+# Quoted at every use. ENV_FILE is user-supplied and the docs invite arbitrary
+# paths, so a directory with a space in it must not split into two arguments.
+COMPOSE := docker compose --env-file "$(ENV_FILE)"
 
 ## help: show every target
 help:
@@ -23,38 +25,39 @@ help:
 
 ## keys: generate the Ed25519 signing keypair outside the repository, once
 keys:
-	@if [ -f $(ENV_FILE) ]; then \
+	@if [ -f "$(ENV_FILE)" ]; then \
 		echo "$(ENV_FILE) exists already; delete it to rotate the keypair"; \
 	else \
-		mkdir -p $(dir $(ENV_FILE)); \
-		chmod 700 $(dir $(ENV_FILE)); \
+		dir=$$(dirname "$(ENV_FILE)"); \
+		mkdir -p "$$dir"; \
+		chmod 700 "$$dir"; \
 		echo "Generating an Ed25519 keypair into $(ENV_FILE)"; \
 		if command -v go > /dev/null 2>&1; then \
-			go run ./cmd/keygen > $(ENV_FILE); \
+			go run ./cmd/keygen > "$(ENV_FILE)"; \
 		else \
 			echo "No Go on the host, so generating through Docker instead."; \
 			docker build -q -f docker/go.Dockerfile -t agentic-attribution-tools . > /dev/null; \
-			docker run --rm agentic-attribution-tools keygen > $(ENV_FILE); \
+			docker run --rm agentic-attribution-tools keygen > "$(ENV_FILE)"; \
 		fi; \
-		echo "MERCHANT_PAY_TO_ADDRESS=0x1111111111111111111111111111111111111111" >> $(ENV_FILE); \
-		chmod 600 $(ENV_FILE); \
+		echo "MERCHANT_PAY_TO_ADDRESS=0x1111111111111111111111111111111111111111" >> "$(ENV_FILE)"; \
+		chmod 600 "$(ENV_FILE)"; \
 		echo "Done. The key sits outside the repository, where nothing with"; \
 		echo "read access to the working tree can reach it."; \
 	fi
 
 ## up: start every service (postgres, opensearch, go services, node services, dashboard)
-up: $(ENV_FILE)
+up: require-keys
 	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "Waiting for OpenSearch, which takes the longest..."
 	@$(COMPOSE) ps
 
 ## seed: generate the catalog and load it into Postgres and OpenSearch
-seed: $(ENV_FILE)
+seed: require-keys
 	$(COMPOSE) --profile seed up --build --abort-on-container-failure generate ingest
 
 ## demo: run the agent through search, 402, payment, settlement, and a failed replay
-demo: $(ENV_FILE)
+demo: require-keys
 	$(COMPOSE) --profile demo run --rm --build simulator
 
 ## dashboard: open the publisher dashboard
@@ -103,8 +106,13 @@ lint:
 fixture:
 	go run ./cmd/fixture > packages/types/src/__fixtures__/go-minted-assertion.json
 
-# Every target needing the keypair depends on this, so a missing key file
-# produces one instruction rather than a wall of compose interpolation errors.
-$(ENV_FILE):
-	@echo "No key file at $(ENV_FILE). Run: make keys"
-	@exit 1
+# A phony guard rather than a file target. Make splits prerequisites on
+# whitespace, so a path containing a space could never work as a target name,
+# and a missing key file should produce one instruction rather than a wall of
+# compose interpolation errors.
+require-keys:
+	@test -f "$(ENV_FILE)" || { \
+		echo "No key file at $(ENV_FILE)."; \
+		echo "Run: make keys"; \
+		exit 1; \
+	}

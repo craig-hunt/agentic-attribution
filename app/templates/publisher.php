@@ -25,7 +25,7 @@ $currency = (string) $summary['payout_currency'];
 <h2>Settlements</h2>
 
 <?php if ($settlements === []): ?>
-  <div class="err">No settlements yet. Run <code>npm run simulate</code> to drive a purchase.</div>
+  <div class="err">No settlements yet. Run <code>make demo</code> to drive a purchase.</div>
 <?php else: ?>
   <table>
     <thead>
