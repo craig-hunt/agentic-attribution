@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -92,7 +93,7 @@ func (l *PostgresLoader) LoadReference(ctx context.Context, seedDir string) ([]P
 	for _, s := range specs {
 		start := time.Now()
 
-		rows, err := l.copyCSVDirect(ctx, seedDir+"/"+s.file, s.table, s.columns)
+		rows, err := l.copyCSVUpsert(ctx, seedDir+"/"+s.file, s.table, s.columns, s.conflict)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s.phase, err)
 		}
@@ -143,7 +144,13 @@ func (l *PostgresLoader) LoadListings(ctx context.Context, seedDir string) ([]Ph
 	// Phase 3: build replacement partitions with indexes, outside any lock on
 	// the live table.
 	start = time.Now()
-	if err := l.buildReplacementPartitions(ctx); err != nil {
+	// The generation stamps index names so a rebuild never collides with the
+	// names the previous run left attached to the live partitions. Nanosecond
+	// resolution rather than seconds, because two rebuilds inside one second
+	// would otherwise generate the same name and fail the second one.
+	generation := strconv.FormatInt(time.Now().UnixNano(), 36)
+
+	if err := l.buildReplacementPartitions(ctx, generation); err != nil {
 		return nil, fmt.Errorf("build partitions: %w", err)
 	}
 	timings = append(timings, PhaseTiming{Phase: "build_partitions", Rows: staged, Duration: time.Since(start)})
@@ -187,6 +194,60 @@ func (l *PostgresLoader) copyCSVDirect(ctx context.Context, path, table string, 
 	source := &csvCopySource{reader: reader, columnCount: len(columns)}
 
 	return conn.Conn().CopyFrom(ctx, pgx.Identifier{table}, columns, source)
+}
+
+// copyCSVUpsert loads reference data that may already exist. COPY carries no
+// ON CONFLICT clause, so a straight copy into a populated table fails on the
+// primary key and makes a reload impossible. Staging through a temporary table
+// keeps the COPY fast and lets one INSERT resolve the conflicts.
+//
+// Truncating the target instead would be simpler and wrong: listings,
+// settlements, and the ledger all hold foreign keys into these tables.
+func (l *PostgresLoader) copyCSVUpsert(
+	ctx context.Context,
+	path, table string,
+	columns []string,
+	conflictColumn string,
+) (int64, error) {
+	staging := table + "_upsert_staging"
+
+	// A real table rather than a temporary one: pgxpool hands each statement
+	// whichever connection is free, and a session-scoped temp table would be
+	// invisible to the connection the COPY lands on.
+	if _, err := l.pool.Exec(ctx, "DROP TABLE IF EXISTS "+staging); err != nil {
+		return 0, fmt.Errorf("clear upsert staging: %w", err)
+	}
+	if _, err := l.pool.Exec(ctx,
+		fmt.Sprintf("CREATE UNLOGGED TABLE %s (LIKE %s INCLUDING DEFAULTS)", staging, table)); err != nil {
+		return 0, fmt.Errorf("create upsert staging: %w", err)
+	}
+	defer func() {
+		_, _ = l.pool.Exec(ctx, "DROP TABLE IF EXISTS "+staging)
+	}()
+
+	rows, err := l.copyCSVDirect(ctx, path, staging, columns)
+	if err != nil {
+		return 0, err
+	}
+
+	assignments := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if column == conflictColumn {
+			continue
+		}
+		assignments = append(assignments, fmt.Sprintf("%s = EXCLUDED.%s", column, column))
+	}
+
+	upsert := fmt.Sprintf(
+		"INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT (%s) DO UPDATE SET %s",
+		table, strings.Join(columns, ", "), strings.Join(columns, ", "),
+		staging, conflictColumn, strings.Join(assignments, ", "))
+
+	if _, err := l.pool.Exec(ctx, upsert); err != nil {
+		return 0, fmt.Errorf("upsert %s: %w", table, err)
+	}
+
+	return rows, nil
 }
 
 // csvCopySource adapts a CSV reader to pgx.CopyFromSource so rows stream
@@ -275,9 +336,17 @@ func (l *PostgresLoader) validateStaging(ctx context.Context, expected int64) er
 // buildReplacementPartitions creates a standalone table per hash bucket,
 // populates it from staging, and indexes it. Nothing here touches the live
 // partitioned table, so serving continues unaffected.
-func (l *PostgresLoader) buildReplacementPartitions(ctx context.Context) error {
+// buildReplacementPartitions stages a full replacement for every partition.
+//
+// Index names carry a per-run generation suffix because ALTER TABLE RENAME
+// moves a table without renaming its indexes. A second ingest would otherwise
+// try to create an index name the first run left attached to the live
+// partition, and the rebuild the architecture calls routine would fail on
+// every run after the first.
+func (l *PostgresLoader) buildReplacementPartitions(ctx context.Context, generation string) error {
 	for i := 0; i < ListingPartitions; i++ {
 		next := fmt.Sprintf("listings_p%d_next", i)
+		prefix := fmt.Sprintf("listings_p%d_%s", i, generation)
 
 		stmts := []string{
 			fmt.Sprintf("DROP TABLE IF EXISTS %s", next),
@@ -290,10 +359,10 @@ func (l *PostgresLoader) buildReplacementPartitions(ctx context.Context) error {
 				FROM listings_staging
 				WHERE satisfies_hash_partition('listings'::regclass, %d, %d, merchant_id)
 			`, next, ListingPartitions, i),
-			fmt.Sprintf(`ALTER TABLE %s ADD PRIMARY KEY (listing_id, merchant_id)`, next),
-			fmt.Sprintf(`CREATE UNIQUE INDEX %s_sku_key ON %s (merchant_id, merchant_sku)`, next, next),
-			fmt.Sprintf(`CREATE INDEX %s_product_idx ON %s (product_id)`, next, next),
-			fmt.Sprintf(`CREATE INDEX %s_updated_idx ON %s (merchant_id, updated_at DESC)`, next, next),
+			fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s_pkey PRIMARY KEY (listing_id, merchant_id)`, next, prefix),
+			fmt.Sprintf(`CREATE UNIQUE INDEX %s_sku_key ON %s (merchant_id, merchant_sku)`, prefix, next),
+			fmt.Sprintf(`CREATE INDEX %s_product_idx ON %s (product_id)`, prefix, next),
+			fmt.Sprintf(`CREATE INDEX %s_updated_idx ON %s (merchant_id, updated_at DESC)`, prefix, next),
 		}
 
 		for _, stmt := range stmts {

@@ -122,8 +122,17 @@ func (s *Store) Begin(ctx context.Context, p PendingSettlement) error {
 			publisher_amount_cents, chain_network, status
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
 
+	// The column is nullable and carries a foreign key. An empty string
+	// satisfies neither, so it would fail the insert with an opaque constraint
+	// violation rather than recording a settlement whose originating query is
+	// simply unknown.
+	var searchRequestID *string
+	if p.SearchRequestID != "" {
+		searchRequestID = &p.SearchRequestID
+	}
+
 	_, err = tx.Exec(ctx, insert,
-		p.SettlementID, p.AssertionID, p.SearchRequestID, p.PublisherID,
+		p.SettlementID, p.AssertionID, searchRequestID, p.PublisherID,
 		p.MerchantID, p.ProductID, p.GrossAmountCents, p.Currency,
 		p.CommissionBps, p.Split.CommissionAmountCents, p.Split.PlatformFeeCents,
 		p.Split.PublisherAmountCents, p.ChainNetwork, StatusPending,
