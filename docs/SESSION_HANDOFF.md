@@ -98,7 +98,15 @@ agentic-attribution/
 │   ├── src/agent.ts                   ✓ search, select, 402, EIP-3009 sign, pay
 │   ├── src/index.ts                   ✓ CLI, prints the chain, then proves replay fails
 │   └── src/agent.test.ts              ✓ 9 tests
-└── merchant/                          ✓ 402 challenge, local verify, settlement call, fulfillment
+├── merchant/                          ✓ 402 challenge, local verify, settlement call, fulfillment
+└── app/                               ✓ PHP 8.3 publisher dashboard, no framework, no runtime deps
+    ├── src/Money.php                  ✓ integer cents everywhere, never floats
+    ├── src/SettlementClient.php       ✓ reads through the service, not Postgres
+    ├── src/View.php                   ✓ buffered render + e() escaping helper
+    ├── src/Router.php                 ✓ four routes, single-segment placeholders
+    ├── src/bootstrap.php              ✓ PSR-4 autoload without Composer
+    ├── templates/                     ✓ layout, publishers, publisher, chain, error
+    └── tests/run.php                  ✓ 41 assertions, dependency-free runner
     ├── src/config.ts                  ✓ cents to USDC atomic units, env loading
     ├── src/catalog.ts                 ✓ merchant reads its own feed rows
     ├── src/x402.ts                    ✓ camelCase wire types, base64 header codec
@@ -125,7 +133,6 @@ agentic-attribution/
 - `docs/RUNNING.md` — local and deployed setup
 
 **Code, in build order:**
-- `app/` (PHP 8.3) — publisher dashboard, attribution chain visualization. **The last unbuilt service**
 - `docker-compose.yml` — Postgres, OpenSearch, ingest, search, settlement, gateway, merchant, facilitator, app
 - `Makefile` — `make demo` runs generator, ingest, then the simulator
 - `cypress/` — E2E per ADR-0006, 90% of mission-critical paths, `data-testid` selectors, constants not literals

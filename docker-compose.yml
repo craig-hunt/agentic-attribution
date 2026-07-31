@@ -1,0 +1,183 @@
+# Everything the demo needs, on one machine. No account, no credential, no
+# wallet, no funded testnet balance, no hosted dependency. See ADR-0007.
+
+name: agentic-attribution
+
+x-go-build: &go-build
+  build:
+    context: .
+    dockerfile: docker/go.Dockerfile
+
+x-node-build: &node-build
+  build:
+    context: .
+    dockerfile: docker/node.Dockerfile
+
+x-attribution-keys: &attribution-keys
+  ATTRIBUTION_PUBLIC_KEY: ${ATTRIBUTION_PUBLIC_KEY:?run `make keys` first}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: agentic
+      POSTGRES_PASSWORD: agentic
+      POSTGRES_DB: agentic
+    ports:
+      - "5432:5432"
+    volumes:
+      # Files here run once on an empty data directory, in filename order, so
+      # the schema and indexes land before anything connects.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentic -d agentic"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    environment:
+      discovery.type: single-node
+      # Security off for a local demo only. Nothing here listens beyond the
+      # host, and enabling it would put a credential between a reviewer and
+      # their first successful run.
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  # Two one-shot stages rather than one shell pipeline. The Go image is
+  # distroless and carries no shell, which is the point of choosing it, so
+  # chaining with && is not available and compose sequences them instead.
+  generate:
+    <<: *go-build
+    profiles: ["seed"]
+    command:
+      - generator
+      - --seed=42
+      - --canonical=${CANONICAL_PRODUCTS:-20000}
+      - --out=/seed
+    volumes:
+      - seed-data:/seed
+
+  # Bulk-loads Postgres through a staging table and an atomic partition swap,
+  # then builds a versioned OpenSearch index and swaps the alias onto it.
+  # Exits when the index is live.
+  ingest:
+    <<: *go-build
+    profiles: ["seed"]
+    command:
+      - ingest
+      - --seed=/seed
+    environment:
+      POSTGRES_DSN: postgres://agentic:agentic@postgres:5432/agentic?sslmode=disable
+      OPENSEARCH_URL: http://opensearch:9200
+    volumes:
+      - seed-data:/seed
+    depends_on:
+      generate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+
+  search:
+    <<: *go-build
+    command: ["search"]
+    environment:
+      <<: *attribution-keys
+      ATTRIBUTION_PRIVATE_KEY: ${ATTRIBUTION_PRIVATE_KEY:?run `make keys` first}
+      POSTGRES_DSN: postgres://agentic:agentic@postgres:5432/agentic?sslmode=disable
+      OPENSEARCH_URL: http://opensearch:9200
+      SEARCH_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+
+  settlement:
+    <<: *go-build
+    command: ["settlement"]
+    environment:
+      # Only the public half. Settlement verifies and never mints, so nothing it
+      # can read lets it forge an assertion.
+      <<: *attribution-keys
+      POSTGRES_DSN: postgres://agentic:agentic@postgres:5432/agentic?sslmode=disable
+      SETTLEMENT_ADDR: ":8082"
+      X402_FACILITATOR_URL: ${X402_FACILITATOR_URL:-http://facilitator:8095}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  facilitator:
+    <<: *node-build
+    command: ["npx", "tsx", "facilitator/src/index.ts"]
+    environment:
+      FACILITATOR_PORT: "8095"
+    ports:
+      - "8095:8095"
+
+  merchant:
+    <<: *node-build
+    command: ["npx", "tsx", "merchant/src/index.ts"]
+    environment:
+      <<: *attribution-keys
+      MERCHANT_ID: ${MERCHANT_ID:-merch_0001}
+      MERCHANT_PORT: "8090"
+      MERCHANT_PAY_TO_ADDRESS: ${MERCHANT_PAY_TO_ADDRESS:-0x1111111111111111111111111111111111111111}
+      POSTGRES_DSN: postgres://agentic:agentic@postgres:5432/agentic?sslmode=disable
+      SETTLEMENT_URL: http://settlement:8082
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  gateway:
+    <<: *node-build
+    command: ["npx", "tsx", "gateway/src/node.ts"]
+    environment:
+      <<: *attribution-keys
+      GATEWAY_PORT: "8080"
+      SEARCH_URL: http://search:8081
+      MERCHANT_URL: http://merchant:8090
+    ports:
+      - "8080:8080"
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/php.Dockerfile
+    environment:
+      SETTLEMENT_URL: http://settlement:8082
+    ports:
+      - "8000:8000"
+
+  # Runs the whole loop and exits. Profiled so `docker compose up` brings up the
+  # services without immediately driving a purchase through them.
+  simulator:
+    <<: *node-build
+    profiles: ["demo"]
+    command: ["npx", "tsx", "simulator/src/index.ts"]
+    environment:
+      GATEWAY_URL: http://gateway:8080
+      DEMO_QUERY: ${DEMO_QUERY:-trail running shoes}
+      DEMO_PUBLISHER_ID: ${DEMO_PUBLISHER_ID:-pub_0001}
+
+volumes:
+  postgres-data:
+  opensearch-data:
+  seed-data:

@@ -1,0 +1,31 @@
+# Build context hygiene. Without this, the ~200MB node_modules tree and the
+# generated catalog get shipped to the daemon on every build, which dominates
+# build time and busts the layer cache on changes that matter to neither.
+node_modules
+**/node_modules
+*/dist
+packages/*/dist
+
+.git
+.github
+
+db/seed
+opensearch-data
+postgres-data
+.docker-data
+
+app/vendor
+cypress/videos
+cypress/screenshots
+
+# Key material never enters a build context. An image layer keeps whatever it
+# was built with, so a leaked .env survives even after the file is deleted.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+docs
+bench
+*.md
