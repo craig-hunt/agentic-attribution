@@ -19,6 +19,7 @@ type stubOpenSearch struct {
 	searchStatus int
 	searchBody   string
 	modelHits    int
+	decodeErr    error
 }
 
 // newStubOpenSearch answers the two calls Search makes: the model lookup and
@@ -43,7 +44,12 @@ func newStubOpenSearch(t *testing.T) *stubOpenSearch {
 		}
 
 		s.searchCalls++
-		_ = json.NewDecoder(r.Body).Decode(&s.lastSearch)
+
+		// A discarded decode error leaves lastSearch nil, and the type
+		// assertions that read it panic somewhere with no bearing on the cause.
+		if decodeErr := json.NewDecoder(r.Body).Decode(&s.lastSearch); decodeErr != nil {
+			s.decodeErr = decodeErr
+		}
 
 		w.WriteHeader(s.searchStatus)
 		_, _ = w.Write([]byte(s.searchBody))
@@ -169,6 +175,10 @@ func TestTheResolvedModelReachesTheQuery(t *testing.T) {
 
 	if _, err := NewService(stub.server.URL).Search(context.Background(), Request{Query: "runner"}); err != nil {
 		t.Fatalf("Search: %v", err)
+	}
+
+	if stub.decodeErr != nil {
+		t.Fatalf("the stub could not decode the query the service sent: %v", stub.decodeErr)
 	}
 
 	branches := stub.lastSearch["query"].(map[string]any)["hybrid"].(map[string]any)["queries"].([]any)

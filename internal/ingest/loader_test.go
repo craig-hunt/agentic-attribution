@@ -270,10 +270,11 @@ func TestDocumentSourceStreamsProductsWithTheirOffers(t *testing.T) {
 			seen++
 
 			// Grouping runs in constant memory by relying on the query's
-			// ordering, so a product appearing twice would mean a group split
-			// across batch boundaries and an index missing offers.
+			// ordering, so a product appearing twice means a group split across
+			// batch boundaries and an index missing offers. Returning early
+			// here would end the batch quietly and let the run pass.
 			if ids[doc.ProductID] {
-				return nil
+				t.Errorf("%s streamed twice, so its offers split across batches", doc.ProductID)
 			}
 			ids[doc.ProductID] = true
 
