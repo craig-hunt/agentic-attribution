@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Each service against a stub of its neighbours. Fast, and blind by
+  # construction to anything that depends on how a real dependency behaves.
+  unit:
+    name: Unit suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # The compose file interpolates the signing keypair, and every service
+      # that verifies an assertion needs the public half. Generated per run:
+      # a key committed to a repository is a key someone eventually funds.
+      - name: Generate a signing keypair
+        run: make keys ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Go, TypeScript, and PHP suites
+        run: make test-docker ENV_FILE=$RUNNER_TEMP/env
+
+  # The tier that fails when the demo does not work. Unit suites cannot catch a
+  # wrong belief about a real dependency, because the code and the stub then
+  # encode the same mistake and agree with each other. This runs the documented
+  # first-run path against real containers and asserts on what comes back.
+  smoke:
+    name: Out-of-the-box run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # OpenSearch refuses to start without it, and the runner default is far
+      # below what a single node needs.
+      - name: Raise vm.max_map_count
+        run: sudo sysctl -w vm.max_map_count=262144
+
+      - name: Generate a signing keypair
+        run: make keys ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Clean start through to verification
+        run: make smoke-cold ENV_FILE=$RUNNER_TEMP/env
+
+      # Compose swallows a crashed dependency behind whatever error the caller
+      # happened to see, so the logs matter more than the failure line.
+      - name: Service logs
+        if: failure()
+        run: make logs-once ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Tear down
+        if: always()
+        run: make clean ENV_FILE=$RUNNER_TEMP/env

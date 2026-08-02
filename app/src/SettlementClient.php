@@ -5,22 +5,6 @@ declare(strict_types=1);
 namespace Agentic\Dashboard;
 
 /**
- * Thrown when the settlement service answers with anything other than success.
- * Carrying the status lets the router translate an upstream 404 into a 404 the
- * browser sees, rather than collapsing every upstream failure into a 500.
- */
-final class UpstreamException extends \RuntimeException
-{
-    public function __construct(
-        string $message,
-        public readonly int $status,
-        public readonly string $reason = '',
-    ) {
-        parent::__construct($message);
-    }
-}
-
-/**
  * Reads the dashboard's data from the settlement service rather than from
  * Postgres. The schema stays private to the service that owns it, so a column
  * rename never becomes a coordinated deploy across two languages.
@@ -37,16 +21,16 @@ final readonly class SettlementClient
     /** @return list<array{publisher_id: string, name: string, payout_currency: string}> */
     public function publishers(): array
     {
-        /** @var array{publishers: list<array{publisher_id: string, name: string, payout_currency: string}>} $body */
+        /** @var array{publishers: list<array{publisher_id: string, name: string, payout_currency: string, settlement_count: int, earned_cents: int}>} $body */
         $body = $this->get('/publishers');
 
         return $body['publishers'];
     }
 
-    /** @return array{summary: array<string, mixed>, settlements: list<array<string, mixed>>} */
+    /** @return array{summary: array<string, mixed>, settlements: list<array<string, mixed>>, rejections: list<array<string, mixed>>} */
     public function publisher(string $publisherId, int $limit = 25): array
     {
-        /** @var array{summary: array<string, mixed>, settlements: list<array<string, mixed>>} $body */
+        /** @var array{summary: array<string, mixed>, settlements: list<array<string, mixed>>, rejections: list<array<string, mixed>>} $body */
         $body = $this->get('/publishers/' . rawurlencode($publisherId) . '?limit=' . $limit);
 
         return $body;

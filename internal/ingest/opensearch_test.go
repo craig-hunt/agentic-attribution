@@ -414,3 +414,275 @@ func TestRequestsHonourACancelledContext(t *testing.T) {
 		t.Fatal("the request ignored a cancelled context")
 	}
 }
+
+// vectorResponse builds an inference response carrying n vectors of the given
+// dimension, matching the shape ML Commons returns from _predict.
+func vectorResponse(n, dimensions int) string {
+	values := make([]string, dimensions)
+	for i := range values {
+		values[i] = "0.5"
+	}
+	vector := `{"output":[{"name":"sentence_embedding","data":[` + strings.Join(values, ",") + `]}]}`
+
+	results := make([]string, n)
+	for i := range results {
+		results[i] = vector
+	}
+
+	return `{"inference_results":[` + strings.Join(results, ",") + `]}`
+}
+
+func TestEmbedReturnsOneVectorPerDocument(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/_predict/", http.StatusOK, vectorResponse(2, EmbeddingDimensions))
+
+	vectors, err := cluster.client().Embed(context.Background(), "model_1", []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vectors) != 2 {
+		t.Fatalf("got %d vectors for 2 documents", len(vectors))
+	}
+	for i, vector := range vectors {
+		if len(vector) != EmbeddingDimensions {
+			t.Errorf("vector %d has %d dimensions, want %d", i, len(vector), EmbeddingDimensions)
+		}
+	}
+
+	// The model identifier belongs in the path. Sending it in the body would
+	// reach a different endpoint and embed against whichever model the cluster
+	// picked.
+	if !strings.Contains(cluster.calls[0].path, "model_1") {
+		t.Errorf("predict path %q omits the model id", cluster.calls[0].path)
+	}
+}
+
+func TestEmbedSkipsTheCallForAnEmptyBatch(t *testing.T) {
+	cluster := newFakeCluster(t)
+
+	vectors, err := cluster.client().Embed(context.Background(), "model_1", nil)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if vectors != nil {
+		t.Errorf("got %v, want nil", vectors)
+	}
+	if len(cluster.calls) != 0 {
+		t.Errorf("an empty batch still called %v", cluster.paths())
+	}
+}
+
+// A short response would pair every vector after the gap with the wrong
+// document, producing an index that searches successfully and returns
+// unrelated products.
+func TestEmbedRejectsAResponseShorterThanTheRequest(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/_predict/", http.StatusOK, vectorResponse(2, EmbeddingDimensions))
+
+	_, err := cluster.client().Embed(context.Background(), "model_1", []string{"a", "b", "c"})
+	if err == nil {
+		t.Fatal("Embed accepted 2 vectors for 3 documents")
+	}
+	if !strings.Contains(err.Error(), "2 vectors for 3 documents") {
+		t.Errorf("error does not name the mismatch: %v", err)
+	}
+}
+
+// The mapping fixes the dimension count. A vector of the wrong width fails at
+// index time with an error naming neither the model nor the document.
+func TestEmbedRejectsTheWrongDimensionCount(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/_predict/", http.StatusOK, vectorResponse(1, EmbeddingDimensions-1))
+
+	_, err := cluster.client().Embed(context.Background(), "model_1", []string{"a"})
+	if err == nil {
+		t.Fatal("Embed accepted a vector of the wrong width")
+	}
+	if !strings.Contains(err.Error(), "dimensions") {
+		t.Errorf("error does not mention dimensions: %v", err)
+	}
+}
+
+func TestEmbedRejectsADocumentWithNoOutput(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/_predict/", http.StatusOK, `{"inference_results":[{"output":[]}]}`)
+
+	if _, err := cluster.client().Embed(context.Background(), "model_1", []string{"a"}); err == nil {
+		t.Fatal("Embed accepted a result carrying no embedding")
+	}
+}
+
+func TestDeployedModelIDReturnsTheDeployedModel(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/models/_search", http.StatusOK,
+		`{"hits":{"hits":[{"_id":"model_deployed"}]}}`)
+
+	modelID, err := cluster.client().DeployedModelID(context.Background())
+	if err != nil {
+		t.Fatalf("DeployedModelID: %v", err)
+	}
+	if modelID != "model_deployed" {
+		t.Errorf("model id = %q, want model_deployed", modelID)
+	}
+	// Any state other than DEPLOYED would hand back a model the pipeline
+	// cannot run inference against.
+	if !strings.Contains(cluster.calls[0].body, "DEPLOYED") {
+		t.Errorf("model search does not filter on state: %s", cluster.calls[0].body)
+	}
+}
+
+func TestDeployedModelIDFailsWhenNothingIsDeployed(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/models/_search", http.StatusOK, `{"hits":{"hits":[]}}`)
+
+	if _, err := cluster.client().DeployedModelID(context.Background()); err == nil {
+		t.Fatal("DeployedModelID succeeded against an empty result")
+	}
+}
+
+// shortenBulkBackoff keeps the retry tests honest about the backoff without
+// spending its real duration.
+func shortenBulkBackoff(t *testing.T) {
+	t.Helper()
+
+	original := bulkRetryBaseDelay
+	bulkRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { bulkRetryBaseDelay = original })
+}
+
+func oneDocument() []ProductDocument {
+	return []ProductDocument{{ProductID: "prd_1", CanonicalTitle: "Probe"}}
+}
+
+// A cluster shedding load asks for the same work later. Failing the whole
+// ingest run instead makes the demo fail on the machine with the least memory.
+func TestBulkIndexRetriesAnItemRejectedUnderPressure(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_bulk"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			_, _ = w.Write([]byte(`{"errors":true,"items":[{"index":{"status":429,"error":"circuit_breaking_exception"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errors":false,"items":[{"index":{"status":201}}]}`))
+	}
+
+	if err := cluster.client().BulkIndex(context.Background(), "products_v1", oneDocument()); err != nil {
+		t.Fatalf("BulkIndex: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("sent %d attempts, want 3", attempts)
+	}
+}
+
+func TestBulkIndexRetriesAWholeRequestRejectedWith429(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_bulk"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"too many requests"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errors":false,"items":[{"index":{"status":201}}]}`))
+	}
+
+	if err := cluster.client().BulkIndex(context.Background(), "products_v1", oneDocument()); err != nil {
+		t.Fatalf("BulkIndex: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("sent %d attempts, want 2", attempts)
+	}
+}
+
+// Retrying a document the cluster refuses on its merits produces the same
+// refusal every time and hides the real error behind a delay.
+func TestBulkIndexDoesNotRetryARejectedDocument(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_bulk"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		_, _ = w.Write([]byte(`{"errors":true,"items":[{"index":{"status":400,"error":"mapper_parsing_exception"}}]}`))
+	}
+
+	err := cluster.client().BulkIndex(context.Background(), "products_v1", oneDocument())
+	if err == nil {
+		t.Fatal("BulkIndex succeeded against a mapper_parsing_exception")
+	}
+	if attempts != 1 {
+		t.Errorf("sent %d attempts for a non-retriable failure, want 1", attempts)
+	}
+	if !strings.Contains(err.Error(), "mapper_parsing_exception") {
+		t.Errorf("error lost the cluster's reason: %v", err)
+	}
+}
+
+func TestBulkIndexGivesUpAfterTheAttemptLimit(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_bulk"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		_, _ = w.Write([]byte(`{"errors":true,"items":[{"index":{"status":429,"error":"circuit_breaking_exception"}}]}`))
+	}
+
+	if err := cluster.client().BulkIndex(context.Background(), "products_v1", oneDocument()); err == nil {
+		t.Fatal("BulkIndex retried forever against a cluster that never recovered")
+	}
+	if attempts != bulkMaxAttempts {
+		t.Errorf("sent %d attempts, want %d", attempts, bulkMaxAttempts)
+	}
+}
+
+// Every offer field has to reach the index. Dropping them produces products
+// whose offers all read as out of stock at zero price, which fails four
+// services away with an error naming none of this.
+func TestBulkIndexSendsEveryOfferField(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_bulk", http.StatusOK, `{"errors":false,"items":[{"index":{"status":201}}]}`)
+
+	docs := []ProductDocument{{
+		ProductID: "prd_1",
+		Offers: []MerchantOffer{{
+			ListingID:     "lst_1",
+			MerchantID:    "mer_1",
+			ListingTitle:  "Title",
+			PriceCents:    999,
+			InStock:       true,
+			CommissionBps: 500,
+			DeepLinkURL:   "https://example/p/1",
+		}},
+	}}
+
+	if err := cluster.client().BulkIndex(context.Background(), "products_v1", docs); err != nil {
+		t.Fatalf("BulkIndex: %v", err)
+	}
+
+	body := cluster.calls[0].body
+	for _, field := range []string{
+		`"listing_id":"lst_1"`,
+		`"merchant_id":"mer_1"`,
+		`"price_cents":999`,
+		`"in_stock":true`,
+		`"commission_bps":500`,
+		`"deep_link_url":"https://example/p/1"`,
+	} {
+		if !strings.Contains(body, field) {
+			t.Errorf("bulk body omits %s", field)
+		}
+	}
+
+	// embedding_source feeds the model and has no business in the index.
+	if strings.Contains(body, "embedding_source") {
+		t.Errorf("bulk body carries embedding_source: %s", body)
+	}
+}

@@ -94,9 +94,36 @@ export function toTypedMessage(authorization: {
   return {
     from: authorization.from as `0x${string}`,
     to: authorization.to as `0x${string}`,
-    value: BigInt(authorization.value),
-    validAfter: BigInt(authorization.validAfter),
-    validBefore: BigInt(authorization.validBefore),
+    value: toUint256(authorization.value, 'value'),
+    validAfter: toUint256(authorization.validAfter, 'validAfter'),
+    validBefore: toUint256(authorization.validBefore, 'validBefore'),
     nonce: authorization.nonce as `0x${string}`,
   };
+}
+
+/**
+ * Converts one uint256 field, refusing the inputs BigInt accepts too quietly.
+ *
+ * BigInt("") returns 0n rather than throwing, so a missing amount would become
+ * a signed authorization to transfer nothing. The facilitator would reject it
+ * on the amount check afterwards, which is a poor place to learn that a field
+ * never arrived.
+ */
+function toUint256(raw: string, field: string): bigint {
+  if (raw.trim() === '') {
+    throw new TypeError(`${field} is empty; a uint256 field needs a decimal string`);
+  }
+
+  let value: bigint;
+  try {
+    value = BigInt(raw);
+  } catch {
+    throw new TypeError(`${field} is not a valid uint256: ${JSON.stringify(raw)}`);
+  }
+
+  if (value < 0n) {
+    throw new TypeError(`${field} is negative: ${raw}`);
+  }
+
+  return value;
 }

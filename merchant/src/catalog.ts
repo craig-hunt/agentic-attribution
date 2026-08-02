@@ -3,6 +3,7 @@ import pg from 'pg';
 export interface Listing {
   listingId: string;
   productId: string;
+  merchantId: string;
   listingTitle: string;
   priceCents: number;
   currency: string;
@@ -25,19 +26,35 @@ export class Catalog {
     this.#merchantId = merchantId;
   }
 
+  // With no merchant configured the service stands in for whichever merchant
+  // sells the product, which is what a single simulated merchant has to do
+  // against a catalog where three to eight merchants list every product and an
+  // agent picks the best offer among them. Pinning one merchant would reject
+  // almost every purchase, because the merchant an agent chose is almost never
+  // the one merchant the service happened to represent. Setting MERCHANT_ID
+  // narrows it back to a single seller.
   async findListing(productId: string): Promise<Listing | null> {
+    const filtered = this.#merchantId !== '';
+    const parameters: string[] = [productId];
+    if (filtered) {
+      parameters.push(this.#merchantId);
+    }
+
     const result = await this.#pool.query<{
       listing_id: string;
       product_id: string;
+      merchant_id: string;
       listing_title: string;
       price_cents: string;
       currency: string;
       in_stock: boolean;
     }>(
-      `SELECT listing_id, product_id, listing_title, price_cents, currency, in_stock
+      `SELECT listing_id, product_id, merchant_id, listing_title, price_cents, currency, in_stock
          FROM listings
-        WHERE product_id = $1 AND merchant_id = $2`,
-      [productId, this.#merchantId],
+        WHERE product_id = $1${filtered ? ' AND merchant_id = $2' : ''}
+        ORDER BY in_stock DESC, price_cents ASC
+        LIMIT 1`,
+      parameters,
     );
 
     const row = result.rows[0];
@@ -48,6 +65,7 @@ export class Catalog {
     return {
       listingId: row.listing_id,
       productId: row.product_id,
+      merchantId: row.merchant_id,
       listingTitle: row.listing_title,
       // BIGINT arrives as a string from node-postgres because it can exceed
       // Number.MAX_SAFE_INTEGER. Prices in cents never approach that, so the

@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Run from the repository root: these tests read the Go-minted fixture in packages/types by relative filesystem path, which a package-local sandbox cannot resolve.",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "npx tsx --test merchant/src/*.test.ts"
+  },
+  "mutate": [
+    "merchant/src/**/*.ts",
+    "!merchant/src/**/*.test.ts",
+    "!merchant/src/index.ts",
+    "!merchant/src/catalog.ts"
+  ],
+  "ignorePatterns": [
+    "node_modules",
+    ".git",
+    ".stryker-tmp",
+    "db/seed",
+    "app",
+    "cypress",
+    "internal",
+    "cmd",
+    "docs",
+    "opensearch",
+    "docker"
+  ],
+  "coverageAnalysis": "off",
+  "reporters": [
+    "clear-text",
+    "progress"
+  ],
+  "timeoutMS": 30000,
+  "concurrency": 4,
+  "thresholds": {
+    "high": 85,
+    "low": 70,
+    "break": 70
+  },
+  "tempDirName": ".stryker-tmp/merchant",
+  "cleanTempDir": true
+}

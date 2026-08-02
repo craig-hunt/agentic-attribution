@@ -15,7 +15,10 @@ const DEFAULT_SETTLEMENT_URL = 'http://localhost:8082';
 const DEFAULT_POSTGRES_DSN =
   'postgres://agentic:agentic@localhost:5432/agentic?sslmode=disable';
 const DEFAULT_PORT = 8090;
-const DEFAULT_MERCHANT_ID = 'merch_0001';
+// Empty means the service sells whatever the catalog offers rather than
+// pinning one seller. The generated catalog names merchants mer_000000
+// upward, so any hard-coded default would name a merchant that never exists.
+const DEFAULT_MERCHANT_ID = '';
 
 // A merchant holds the payment window open only long enough for an agent to
 // sign and return. Longer windows widen the period during which a signed

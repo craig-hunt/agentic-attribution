@@ -126,14 +126,18 @@ Assertions::true($caught, 'a missing template throws');
 $templates = new View(__DIR__ . '/../templates');
 
 $publisherRow = [
-    'publisher_id' => 'pub_0001',
+    'publisher_id' => 'pub_000001',
     'name' => 'Trail & Peak <Media>',
     'payout_currency' => 'USD',
+    'settlement_count' => 3,
+    'earned_cents' => 1234,
+    'blocked_count' => 2,
+    'failed_count' => 1,
 ];
 
 $rendered = $templates->render('publishers', ['publishers' => [$publisherRow]]);
 Assertions::true(str_contains($rendered, 'Trail &amp; Peak'), 'publisher list escapes the name');
-Assertions::true(str_contains($rendered, '/publishers/pub_0001'), 'publisher list links to the detail page');
+Assertions::true(str_contains($rendered, '/publishers/pub_000001'), 'publisher list links to the detail page');
 
 Assertions::true(
     str_contains($templates->render('publishers', ['publishers' => []]), 'No publishers yet'),
@@ -146,6 +150,7 @@ $summary = $publisherRow + [
     'earned_cents' => 1_228,
     'platform_fee_cents' => 526,
     'search_request_count' => 12,
+    'blocked_count' => 4,
     'assertions_consumed' => 3,
     'average_commission_bps' => 450,
 ];
@@ -163,14 +168,33 @@ $settlementRow = [
     'confirmed_at' => '2026-07-30T12:00:04Z',
 ];
 
-$rendered = $templates->render('publisher', ['summary' => $summary, 'settlements' => [$settlementRow]]);
+$rejectionRow = [
+    'reason' => 'assertion_signature_invalid',
+    'assertion_id' => 'a1',
+    'merchant_id' => 'mer_000042',
+    'detail' => 'verify assertion: invalid signature',
+    'created_at' => '2026-07-30T12:00:09Z',
+];
+
+$rendered = $templates->render('publisher', [
+    'summary' => $summary,
+    'settlements' => [$settlementRow],
+    'rejections' => [$rejectionRow],
+]);
+Assertions::true(
+    str_contains($rendered, 'assertion_signature_invalid'),
+    'publisher page lists the reason an attempt was blocked',
+);
 Assertions::true(str_contains($rendered, '$389.97'), 'publisher page formats gross');
 Assertions::true(str_contains($rendered, '4.5%'), 'publisher page formats the commission rate');
 Assertions::true(str_contains($rendered, 'Trail Runner &lt;Pro&gt;'), 'publisher page escapes a product title');
 Assertions::true(!str_contains($rendered, '<Pro>'), 'publisher page leaks no raw markup');
 
 Assertions::true(
-    str_contains($templates->render('publisher', ['summary' => $summary, 'settlements' => []]), 'No settlements yet'),
+    str_contains(
+        $templates->render('publisher', ['summary' => $summary, 'settlements' => [], 'rejections' => []]),
+        'No settlements for this publisher yet',
+    ),
     'publisher page handles no settlements',
 );
 

@@ -1,0 +1,22 @@
+{
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    // The dashboard is where mutants hide most easily: Money's boundary
+    // arithmetic, Router's segment comparison, and View's escaping all produce
+    // plausible-looking output when an operator flips. Escaping matters most,
+    // since a weakened flag still renders a page that looks correct.
+    "source": {
+        "directories": ["src"],
+        // The autoloader. Mutating it breaks loading rather than behaviour, so
+        // every survivor there is noise.
+        "excludes": ["bootstrap.php"]
+    },
+    "timeout": 30,
+    "logs": {
+        "text": "infection.log"
+    },
+    "mutators": {
+        "@default": true
+    },
+    "minMsi": 70,
+    "minCoveredMsi": 70
+}

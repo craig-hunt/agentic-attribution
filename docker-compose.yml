@@ -45,7 +45,15 @@ services:
       # their first successful run.
       DISABLE_SECURITY_PLUGIN: "true"
       DISABLE_INSTALL_DEMO_CONFIG: "true"
-      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      # 1g is not enough. Neural ingest runs ONNX inference inside the cluster,
+      # so a bulk batch holds the request, the generated vectors, the HNSW
+      # graph under construction, and the indexing buffer at once. With
+      # refresh_interval at -1 that buffer keeps growing, and the node exits
+      # with a fatal OutOfMemoryError partway through the catalog. Ingest then
+      # reports an EOF on _bulk, which describes the symptom rather than the
+      # cause. Override on a constrained machine and seed a smaller catalog:
+      #   OPENSEARCH_HEAP=1g make seed CANONICAL_PRODUCTS=5000
+      OPENSEARCH_JAVA_OPTS: "-Xms${OPENSEARCH_HEAP:-2g} -Xmx${OPENSEARCH_HEAP:-2g}"
       bootstrap.memory_lock: "true"
     ulimits:
       memlock: { soft: -1, hard: -1 }
@@ -136,7 +144,8 @@ services:
     command: ["npx", "tsx", "merchant/src/index.ts"]
     environment:
       <<: *attribution-keys
-      MERCHANT_ID: ${MERCHANT_ID:-merch_0001}
+      # Unset means the simulated merchant sells any product in the catalog.
+      MERCHANT_ID: ${MERCHANT_ID:-}
       MERCHANT_PORT: "8090"
       MERCHANT_PAY_TO_ADDRESS: ${MERCHANT_PAY_TO_ADDRESS:-0x1111111111111111111111111111111111111111}
       POSTGRES_DSN: postgres://agentic:agentic@postgres:5432/agentic?sslmode=disable
@@ -157,12 +166,31 @@ services:
     ports:
       - "8080:8080"
 
+  # Runs a live agent population on demand so the dashboard has something to
+  # show without anyone opening a terminal. Every agent it starts drives the
+  # real path end to end: gateway, search, 402, signature, facilitator,
+  # settlement, ledger.
+  #
+  # Its control endpoints carry no authentication. Acceptable for a service
+  # reachable only from this compose network on one machine, and unacceptable
+  # anywhere else, so the port stays unpublished. Only the dashboard proxies to
+  # it, which keeps the browser same-origin and keeps the driver off the host.
+  driver:
+    <<: *node-build
+    command: ["npx", "tsx", "simulator/src/driver.ts"]
+    environment:
+      DRIVER_PORT: "8096"
+      GATEWAY_URL: http://gateway:8080
+      SETTLEMENT_URL: http://settlement:8082
+
   app:
     build:
       context: .
       dockerfile: docker/php.Dockerfile
+      target: runtime
     environment:
       SETTLEMENT_URL: http://settlement:8082
+      DRIVER_URL: http://driver:8096
     ports:
       - "8000:8000"
 
@@ -175,7 +203,78 @@ services:
     environment:
       GATEWAY_URL: http://gateway:8080
       DEMO_QUERY: ${DEMO_QUERY:-trail running shoes}
-      DEMO_PUBLISHER_ID: ${DEMO_PUBLISHER_ID:-pub_0001}
+      DEMO_PUBLISHER_ID: ${DEMO_PUBLISHER_ID:-pub_000001}
+
+  # Drives the running system and asserts on what it returns. The unit suites
+  # test each service against a stub of its neighbours, which cannot catch a
+  # wrong belief about a real dependency: the code and the stub then encode the
+  # same mistake and agree with each other. This is the tier that fails when
+  # the demo does not work.
+  smoke:
+    <<: *node-build
+    profiles: ["smoke"]
+    command: ["npx", "tsx", "simulator/src/smoke.ts"]
+    environment:
+      GATEWAY_URL: http://gateway:8080
+      SEARCH_URL: http://search:8081
+      SETTLEMENT_URL: http://settlement:8082
+      DASHBOARD_URL: http://app:8000
+      DEMO_QUERY: ${DEMO_QUERY:-trail running shoes}
+      DEMO_PUBLISHER_ID: ${DEMO_PUBLISHER_ID:-pub_000001}
+
+  # Every suite, runnable with Docker alone. A reviewer reproduces the numbers
+  # rather than taking them on faith, without installing Go, Node, PHP,
+  # Composer, or a coverage driver.
+  test-go:
+    build:
+      context: .
+      dockerfile: docker/go.Dockerfile
+      target: test
+    profiles: ["test"]
+    environment:
+      TEST_POSTGRES_DSN: postgres://agentic:agentic@postgres:5432/agentic?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  test-ts:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+      target: test
+    profiles: ["test"]
+
+  test-php:
+    build:
+      context: .
+      dockerfile: docker/php.Dockerfile
+      target: test
+    profiles: ["test"]
+
+  # Mutation runs, same images with a different command. Slower by an order of
+  # magnitude, which is why they sit behind their own profile.
+  mutate-ts:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+      target: test
+    profiles: ["mutate"]
+    command:
+      - sh
+      - -c
+      - >-
+        npx stryker run packages/types/stryker.conf.json &&
+        npx stryker run stryker.gateway.json &&
+        npx stryker run facilitator/stryker.conf.json &&
+        npx stryker run stryker.merchant.json &&
+        npx stryker run stryker.simulator.json
+
+  mutate-php:
+    build:
+      context: .
+      dockerfile: docker/php.Dockerfile
+      target: test
+    profiles: ["mutate"]
+    command: ["./vendor/bin/infection", "--threads=4", "--no-progress", "--no-interaction"]
 
 volumes:
   postgres-data:

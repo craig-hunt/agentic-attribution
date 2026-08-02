@@ -32,7 +32,7 @@ A second consideration: catalogs change constantly. Merchant feeds arrive with i
 - Hybrid retrieval: BM25 keyword matching blended with k-NN vector similarity through a normalization processor in a search pipeline
 - Nothing authoritative
 
-**The governing principle: the index is never the system of record.** Every document in OpenSearch can be reconstructed from Postgres. That single constraint drives the operational model.
+**The governing principle: the index never holds the system of record.** Postgres reconstructs every document in OpenSearch on demand. That single constraint drives the operational model.
 
 **Index lifecycle:**
 - Built through the Bulk API with `refresh_interval` disabled, replicas at zero, and async translog durability during load
@@ -41,7 +41,7 @@ A second consideration: catalogs change constantly. Merchant feeds arrive with i
 - Promoted through **atomic alias swap**, so `products` repoints from `products_v1` to `products_v2` in a single call
 - Previous version retained for rollback
 
-**The search path never touches Postgres.** That separation is why ingest write pressure cannot degrade search latency.
+**The search path never touches Postgres.** That separation explains why ingest write pressure cannot degrade search latency.
 
 ## Consequences
 
@@ -56,18 +56,18 @@ A second consideration: catalogs change constantly. Merchant feeds arrive with i
 **Negative.**
 
 - Two datastores to operate, monitor, back up, and reason about.
-- Eventual consistency between Postgres and the index. A product updated in Postgres does not appear in search until the next index refresh cycle. Acceptable for a catalog; unacceptable if it ever backed the ledger, which is exactly why the ledger stays out of it.
+- Eventual consistency between Postgres and the index. A product updated in Postgres does not appear in search until the next index refresh cycle. Acceptable for a catalog; unacceptable had it ever backed the ledger, which explains exactly why the ledger stays out of it.
 - Reindex cost grows with catalog size. At platform volume, full rebuilds become expensive enough to require incremental strategies alongside the full-rebuild path.
 - The dual-write path in `ingest-svc` needs care. A failure between the Postgres commit and the OpenSearch index leaves them diverged until the next rebuild.
 
 **Neutral.**
 
 - Storage duplication between the canonical record and the index. Real cost, but modest relative to the operational benefit.
-- Requires discipline to prevent the index from accumulating authoritative fields over time. That drift happens gradually and is worth guarding against in review.
+- Requires discipline to prevent the index from accumulating authoritative fields over time. That drift happens gradually and earns a guard in review.
 
 ## Alternatives considered
 
-**OpenSearch alone.** Removes a system, simplifies operations, and search-oriented workloads often run fine on it. Rejected outright because the commission ledger requires ACID transactions. A financial record living in a search index that lacks multi-document transactional guarantees is not a tradeoff worth debating.
+**OpenSearch alone.** Removes a system, simplifies operations, and search-oriented workloads often run fine on it. Rejected outright because the commission ledger requires ACID transactions. A financial record living in a search index lacking multi-document transactional guarantees does not present a tradeoff worth debating.
 
 **Postgres alone, with pgvector for semantic search.** Genuinely viable at this demo's scale. A single system, transactional throughout, and pgvector handles vector similarity competently. Rejected for three reasons. First, hybrid scoring in Postgres requires hand-rolling the normalization and blending that OpenSearch provides through a search pipeline. Second, vector index performance in Postgres degrades relative to purpose-built engines as vector count grows, and this architecture must model platform scale rather than demo scale. Third, and decisively, the target platform runs OpenSearch, so a demo modeling a different search tier would demonstrate an architecture the team cannot adopt.
 

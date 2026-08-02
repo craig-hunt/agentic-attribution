@@ -405,6 +405,60 @@ func TestRegisterEmbeddingModelWaitsForTheTaskToComplete(t *testing.T) {
 	}
 }
 
+// Deployment is asynchronous too, and loading the model into node memory
+// outlasts the HTTP call that starts it. Returning once _deploy responds hands
+// the pipeline a registered-but-undeployed model, and the neural ingest
+// pipeline then rejects every document with "Model not ready yet".
+func TestRegisterEmbeddingModelWaitsForDeploymentToFinish(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/models/_register", http.StatusOK, `{"task_id":"register_task"}`)
+	cluster.on("/_plugins/_ml/models/model_final/_deploy", http.StatusOK, `{"task_id":"deploy_task"}`)
+
+	deployPolls := 0
+	cluster.handlers["/_plugins/_ml/tasks/"] = func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "deploy_task") {
+			_, _ = w.Write([]byte(`{"state":"COMPLETED","model_id":"model_final"}`))
+			return
+		}
+
+		deployPolls++
+		if deployPolls < 2 {
+			_, _ = w.Write([]byte(`{"state":"RUNNING"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"state":"COMPLETED","model_id":"model_final"}`))
+	}
+
+	if _, err := cluster.client().RegisterEmbeddingModel(context.Background()); err != nil {
+		t.Fatalf("RegisterEmbeddingModel: %v", err)
+	}
+	if deployPolls < 2 {
+		t.Fatalf("polled the deploy task %d times; the client did not wait through RUNNING", deployPolls)
+	}
+}
+
+func TestRegisterEmbeddingModelSurfacesAFailedDeployment(t *testing.T) {
+	cluster := newFakeCluster(t)
+	cluster.on("/_plugins/_ml/models/_register", http.StatusOK, `{"task_id":"register_task"}`)
+	cluster.on("/_plugins/_ml/models/model_final/_deploy", http.StatusOK, `{"task_id":"deploy_task"}`)
+
+	cluster.handlers["/_plugins/_ml/tasks/"] = func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "deploy_task") {
+			_, _ = w.Write([]byte(`{"state":"FAILED","error":"insufficient memory on ml node"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"state":"COMPLETED","model_id":"model_final"}`))
+	}
+
+	_, err := cluster.client().RegisterEmbeddingModel(context.Background())
+	if err == nil {
+		t.Fatal("RegisterEmbeddingModel succeeded against a FAILED deployment")
+	}
+	if !strings.Contains(err.Error(), "insufficient memory") {
+		t.Fatalf("error lost the cluster's reason: %v", err)
+	}
+}
+
 func TestRegisterEmbeddingModelSurfacesAFailedTask(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.on("/_plugins/_ml/models/_register", http.StatusOK, `{"task_id":"task_1"}`)

@@ -35,8 +35,10 @@ const fixture: Fixture = JSON.parse(
 const PAY_TO = '0x1111111111111111111111111111111111111111';
 const PRICE_CENTS = 12_999;
 
+const LISTING_MERCHANT = 'mer_000042';
+
 const config: MerchantConfig = {
-  merchantId: 'merch_0001',
+  merchantId: '',
   port: 8090,
   postgresDsn: 'unused',
   settlementUrl: 'unused',
@@ -49,6 +51,7 @@ const config: MerchantConfig = {
 const listing: Listing = {
   listingId: 'lst_1',
   productId: fixture.assertion.product_id,
+  merchantId: LISTING_MERCHANT,
   listingTitle: 'Test Listing',
   priceCents: PRICE_CENTS,
   currency: 'USD',
@@ -174,7 +177,11 @@ test('a paid request settles and returns fulfillment naming the publisher', asyn
 
   // The merchant reports the price it holds, never the amount the buyer named.
   assert.equal(captured.request?.gross_amount_cents, PRICE_CENTS);
-  assert.equal(captured.request?.merchant_id, config.merchantId);
+  // The listing decides which merchant made the sale, not the service's own
+  // configuration. Reporting the configured identifier would credit revenue to
+  // whichever merchant the process happened to name, and with MERCHANT_ID
+  // unset it would report nothing at all.
+  assert.equal(captured.request?.merchant_id, LISTING_MERCHANT);
 });
 
 test('an unknown product returns 404 before any payment work', async () => {

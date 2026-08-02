@@ -27,6 +27,12 @@ final readonly class View
             throw new \RuntimeException("template not found: {$template}");
         }
 
+        // Templates compose by calling $partial(), which keeps a shared block
+        // such as the run controls in one file rather than duplicated across
+        // every page that shows it.
+        $data['partial'] ??= fn (string $name, array $values = []): string
+            => $this->render($name, $values);
+
         // extract() is scoped to this method, so a template variable cannot
         // collide with anything the caller holds.
         extract($data, EXTR_SKIP);

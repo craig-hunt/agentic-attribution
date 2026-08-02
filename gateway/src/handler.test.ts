@@ -418,3 +418,225 @@ test('a body at the limit still passes through', async () => {
   assert.equal(response.status, 200);
   assert.equal(captured.body?.length, 1024);
 });
+
+// A body arriving in several chunks exercises the offset arithmetic that
+// reassembles them. A mutant there corrupts the payload silently rather than
+// failing, so the origin receives something the caller never sent.
+function chunkedRequest(path: string, parts: string[]): Request {
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const part of parts) {
+        controller.enqueue(encoder.encode(part));
+      }
+      controller.close();
+    },
+  });
+
+  return new Request(`http://gateway.test${path}`, {
+    method: 'POST',
+    body: stream,
+    // @ts-expect-error duplex is required for a streaming body and absent from
+    // the DOM lib's RequestInit.
+    duplex: 'half',
+  });
+}
+
+test('a body split across chunks reassembles in order', async () => {
+  const captured: Captured = {};
+  const parts = ['{"query":"trail ', 'running ', 'shoes","size":10}'];
+
+  await withStubbedFetch(captured, () =>
+    handle(chunkedRequest(ROUTE.Search, parts), env),
+  );
+
+  assert.equal(captured.body, parts.join(''));
+  assert.deepEqual(JSON.parse(captured.body ?? ''), { query: 'trail running shoes', size: 10 });
+});
+
+test('a request carrying no body forwards an empty string rather than failing', async () => {
+  const captured: Captured = {};
+
+  const response = await withStubbedFetch(captured, () =>
+    handle(new Request(`http://gateway.test${ROUTE.Search}`, { method: 'POST' }), env),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(captured.body, '');
+});
+
+// Content-Length is a cheap rejection, not the enforcement. A tiny body with a
+// huge declared length is the only case that separates the two: the stream
+// counter would happily pass it, so a 413 here proves the header check ran.
+test('an oversized Content-Length is refused even when the body is small', async () => {
+  const captured: Captured = {};
+
+  const response = await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, {
+        method: 'POST',
+        headers: { 'content-length': String(300 * 1024) },
+        body: 'tiny',
+      }),
+      env,
+    ),
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json() as { reason: string }).reason, 'body_too_large');
+  assert.equal(captured.url, undefined, 'nothing should reach an origin');
+});
+
+// And the mirror case: a declared length inside the limit does not exempt an
+// oversized body, because Content-Length can simply lie.
+test('an understated Content-Length does not exempt an oversized body', async () => {
+  const captured: Captured = {};
+
+  const response = await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, {
+        method: 'POST',
+        headers: { 'content-length': '4' },
+        body: 'x'.repeat(300 * 1024),
+      }),
+      env,
+    ),
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal(captured.url, undefined);
+});
+
+test('a body at exactly the limit passes and one byte over does not', async () => {
+  const captured: Captured = {};
+  const limit = 256 * 1024;
+
+  const atLimit = await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, { method: 'POST', body: 'x'.repeat(limit) }),
+      env,
+    ),
+  );
+  assert.equal(atLimit.status, 200, 'a body at exactly the limit must pass');
+  assert.equal(captured.body?.length, limit);
+
+  const overLimit = await withStubbedFetch({}, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, { method: 'POST', body: 'x'.repeat(limit + 1) }),
+      env,
+    ),
+  );
+  assert.equal(overLimit.status, 413, 'one byte over must be refused');
+});
+
+// Importing a key costs materially more than verifying with one, and a Worker
+// isolate serves many requests. A cache that never hits puts that cost on every
+// request; a cache that never invalidates verifies against a rotated-away key.
+test('the verification key is imported once and reused', async () => {
+  resetKeyCache();
+
+  const captured: Captured = {};
+  const headers = {
+    [PAYMENT_HEADER]: encodeHeaderJson({ scheme: 'exact' }),
+    [ASSERTION_HEADER]: encodeHeaderJson(fixture.assertion),
+  };
+
+  for (let i = 0; i < 3; i += 1) {
+    const response = await withStubbedFetch(captured, () =>
+      handle(purchaseRequest(headers), env, at),
+    );
+    assert.equal(response.status, 200, `call ${i} should verify against the cached key`);
+  }
+});
+
+test('changing the configured key re-imports rather than reusing the cached one', async () => {
+  resetKeyCache();
+
+  const headers = {
+    [PAYMENT_HEADER]: encodeHeaderJson({ scheme: 'exact' }),
+    [ASSERTION_HEADER]: encodeHeaderJson(fixture.assertion),
+  };
+
+  const first = await withStubbedFetch({}, () => handle(purchaseRequest(headers), env, at));
+  assert.equal(first.status, 200);
+
+  // A different key must not verify this assertion. Reusing the cached one
+  // would accept it and keep trusting a key the operator rotated away from.
+  const otherKey = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+  const exported = await crypto.subtle.exportKey('raw', otherKey.publicKey);
+
+  const rotated = {
+    ...env,
+    ATTRIBUTION_PUBLIC_KEY: btoa(String.fromCharCode(...new Uint8Array(exported))),
+  };
+
+  const second = await withStubbedFetch({}, () => handle(purchaseRequest(headers), rotated, at));
+  assert.equal(second.status, 401, 'the rotated key must reject an assertion signed by the old one');
+
+  // And switching back restores the original behaviour rather than staying on
+  // whichever key happened to be cached last.
+  const third = await withStubbedFetch({}, () => handle(purchaseRequest(headers), env, at));
+  assert.equal(third.status, 200);
+});
+
+test('health answers only for GET on its own path', async () => {
+  const cases: Array<[string, string, number]> = [
+    ['GET', ROUTE.Health, 200],
+    ['POST', ROUTE.Health, 404],
+    ['GET', ROUTE.Search, 405],
+    ['GET', ROUTE.Purchase, 405],
+    ['GET', '/health', 405],
+    ['GET', '/healthz/', 405],
+  ];
+
+  for (const [method, path, expected] of cases) {
+    const request = new Request(`http://gateway.test${path}`, {
+      method,
+      ...(method === 'POST' ? { body: '{}' } : {}),
+    });
+
+    const response = await withStubbedFetch({}, () => handle(request, env));
+
+    assert.equal(response.status, expected, `${method} ${path}`);
+  }
+});
+
+// Asserting the set as a group leaves each member's presence unverified, so a
+// mutant dropping one from the list survives.
+test('each hop-by-hop header is stripped individually', async () => {
+  for (const header of ['host', 'content-length', 'connection']) {
+    const captured: Captured = {};
+
+    await withStubbedFetch(captured, () =>
+      handle(
+        new Request(`http://gateway.test${ROUTE.Search}`, {
+          method: 'POST',
+          headers: { [header]: 'value', 'x-keep': 'yes' },
+          body: '{}',
+        }),
+        env,
+      ),
+    );
+
+    assert.equal(captured.headers?.get(header), null, `${header} should not reach the origin`);
+    assert.equal(captured.headers?.get('x-keep'), 'yes');
+  }
+});
+
+test('header names are matched case-insensitively when stripping', async () => {
+  const captured: Captured = {};
+
+  await withStubbedFetch(captured, () =>
+    handle(
+      new Request(`http://gateway.test${ROUTE.Search}`, {
+        method: 'POST',
+        headers: { 'CONNECTION': 'keep-alive' },
+        body: '{}',
+      }),
+      env,
+    ),
+  );
+
+  assert.equal(captured.headers?.get('connection'), null);
+});

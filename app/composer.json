@@ -9,6 +9,7 @@
         "ext-json": "*"
     },
     "require-dev": {
+        "infection/infection": "^0.29",
         "phpunit/phpunit": "^11.5"
     },
     "autoload": {
@@ -23,9 +24,14 @@
     },
     "scripts": {
         "test": "phpunit",
-        "serve": "php -S 0.0.0.0:8000 -t public"
+        "serve": "php -S 0.0.0.0:8000 -t public",
+        "test:fast": "php tests/run.php",
+        "mutate": "infection --threads=4 --no-progress"
     },
     "config": {
-        "sort-packages": true
+        "sort-packages": true,
+        "allow-plugins": {
+            "infection/extension-installer": true
+        }
     }
 }

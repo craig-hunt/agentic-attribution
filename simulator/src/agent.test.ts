@@ -45,7 +45,7 @@ const requirements: PaymentRequirements = {
 function assertion(productId: string): AttributionAssertion {
   return {
     assertion_id: `a_${productId}`,
-    publisher_id: 'pub_0001',
+    publisher_id: 'pub_000001',
     product_id: productId,
     search_request_id: 'req_1',
     issued_at: '2026-07-30T12:00:00Z',
@@ -259,7 +259,7 @@ test('a non-JSON body on the search and challenge paths behaves the same way', a
   const agent = new Agent({ gatewayUrl: 'http://g.test', account, fetchImpl: plain });
 
   await assert.rejects(
-    () => agent.search('shoes', 'pub_0001'),
+    () => agent.search('shoes', 'pub_000001'),
     (error: unknown) => error instanceof AgentError && error.body === 'upstream unavailable',
   );
 
@@ -267,4 +267,197 @@ test('a non-JSON body on the search and challenge paths behaves the same way', a
     () => agent.requestChallenge('prod_a'),
     (error: unknown) => error instanceof AgentError && error.body === 'upstream unavailable',
   );
+});
+
+interface Sent {
+  url: string;
+  method?: string;
+  headers: Headers;
+  body?: string;
+}
+
+function recordingAgent(responses: Response[], gatewayUrl = 'http://g.test') {
+  const sent: Sent[] = [];
+  let next = 0;
+
+  const agent = new Agent({
+    gatewayUrl,
+    account,
+    now: () => FIXED_NOW,
+    fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({
+        url: String(input),
+        method: init?.method,
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === 'string' ? init.body : undefined,
+      });
+      return responses[next++] ?? new Response('{}', { status: 200 });
+    }) as typeof globalThis.fetch,
+  });
+
+  return { agent, sent };
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
+}
+
+// A trailing slash would produce //search, which the gateway answers with a
+// 404 rather than results.
+test('a trailing slash on the gateway URL does not double', async () => {
+  const { agent, sent } = recordingAgent([json(searchResponse)], 'http://g.test///');
+
+  await agent.search('shoes', 'pub_000001');
+
+  assert.equal(sent[0]?.url, 'http://g.test/search');
+});
+
+test('search posts the query, publisher, and size as JSON', async () => {
+  const { agent, sent } = recordingAgent([json(searchResponse)]);
+
+  await agent.search('trail shoes', 'pub_0007', 42);
+
+  assert.equal(sent[0]?.url, 'http://g.test/search');
+  assert.equal(sent[0]?.method, 'POST');
+  assert.equal(sent[0]?.headers.get('Content-Type'), 'application/json');
+  assert.deepEqual(JSON.parse(sent[0]?.body ?? '{}'), {
+    query: 'trail shoes',
+    publisher_id: 'pub_0007',
+    size: 42,
+  });
+});
+
+test('search defaults its page size rather than omitting it', async () => {
+  const { agent, sent } = recordingAgent([json(searchResponse)]);
+
+  await agent.search('shoes', 'pub_000001');
+
+  assert.equal(JSON.parse(sent[0]?.body ?? '{}').size, 10);
+});
+
+test('the challenge request carries the product and no payment headers', async () => {
+  const { agent, sent } = recordingAgent([
+    json({ x402Version: 1, accepts: [requirements] }, 402),
+  ]);
+
+  await agent.requestChallenge('prd_9');
+
+  assert.equal(sent[0]?.url, 'http://g.test/purchase');
+  assert.equal(sent[0]?.method, 'POST');
+  assert.equal(sent[0]?.headers.get('Content-Type'), 'application/json');
+  assert.deepEqual(JSON.parse(sent[0]?.body ?? '{}'), { product_id: 'prd_9' });
+
+  // The first half of the exchange carries no payment, so sending one would
+  // skip the challenge the merchant is meant to issue.
+  assert.equal(sent[0]?.headers.get(PAYMENT_HEADER), null);
+  assert.equal(sent[0]?.headers.get(ASSERTION_HEADER), null);
+});
+
+// A 402 with no requirements leaves nothing to sign. Proceeding would build an
+// authorization against undefined and fail somewhere unrelated.
+test('a 402 carrying no requirements is refused', async () => {
+  const { agent } = recordingAgent([json({ x402Version: 1, accepts: [] }, 402)]);
+
+  await assert.rejects(
+    () => agent.requestChallenge('prd_1'),
+    (error: unknown) => error instanceof AgentError && error.status === 402,
+  );
+});
+
+test('the completed purchase posts the product alongside both headers', async () => {
+  const { agent, sent } = recordingAgent([json({ order_id: 'o1' })]);
+
+  await agent.completePurchase('prd_3', assertion('prd_3'), { scheme: 'exact' });
+
+  assert.equal(sent[0]?.url, 'http://g.test/purchase');
+  assert.equal(sent[0]?.method, 'POST');
+  assert.deepEqual(JSON.parse(sent[0]?.body ?? '{}'), { product_id: 'prd_3' });
+  assert.ok(sent[0]?.headers.get(PAYMENT_HEADER));
+  assert.ok(sent[0]?.headers.get(ASSERTION_HEADER));
+});
+
+// Ties resolve to the first offer seen rather than the last. A non-strict
+// comparison would keep swapping between equally priced offers and make the
+// selection depend on result ordering that carries no meaning.
+test('equally priced in-stock offers resolve to the first seen', () => {
+  const tied: SearchResponse = {
+    search_request_id: 'req_1',
+    products: [
+      {
+        product_id: 'prd_a',
+        canonical_title: 'A',
+        offers: [
+          { listing_id: 'first', merchant_id: 'm1', price_cents: 5_000, in_stock: true, commission_bps: 100 },
+          { listing_id: 'second', merchant_id: 'm2', price_cents: 5_000, in_stock: true, commission_bps: 900 },
+        ],
+      },
+    ],
+    assertions: [assertion('prd_a')],
+  };
+
+  assert.equal(selectCheapestInStock(tied)?.offer.listing_id, 'first');
+});
+
+test('a cheaper out-of-stock offer never wins over a costlier available one', () => {
+  const mixed: SearchResponse = {
+    search_request_id: 'req_1',
+    products: [
+      {
+        product_id: 'prd_a',
+        canonical_title: 'A',
+        offers: [
+          { listing_id: 'cheap', merchant_id: 'm1', price_cents: 100, in_stock: false, commission_bps: 100 },
+          { listing_id: 'available', merchant_id: 'm2', price_cents: 9_999, in_stock: true, commission_bps: 100 },
+        ],
+      },
+    ],
+    assertions: [assertion('prd_a')],
+  };
+
+  assert.equal(selectCheapestInStock(mixed)?.offer.listing_id, 'available');
+});
+
+// purchase() drives the whole loop, so a search returning nothing buyable has
+// to stop with a clear reason rather than signing an authorization for a
+// product that does not exist.
+test('the full loop refuses to proceed with nothing buyable', async () => {
+  const empty: SearchResponse = { search_request_id: 'req_1', products: [], assertions: [] };
+  const { agent } = recordingAgent([json(empty)]);
+
+  await assert.rejects(
+    () => agent.purchase('nothing matches this', 'pub_000001'),
+    (error: unknown) =>
+      error instanceof AgentError && error.status === 404 && error.message.includes('nothing matches this'),
+  );
+});
+
+test('the full loop searches, takes the challenge, signs, and pays in order', async () => {
+  const { agent, sent } = recordingAgent([
+    json(searchResponse),
+    json({ x402Version: 1, accepts: [requirements] }, 402),
+    json({ order_id: 'o1', settlement_id: 'stl_1', attributed_publisher_id: 'pub_000001' }),
+  ]);
+
+  const { selection, fulfillment } = await agent.purchase('runner', 'pub_000001');
+
+  assert.equal(sent.length, 3);
+  assert.equal(sent[0]?.url, 'http://g.test/search');
+  assert.equal(sent[1]?.url, 'http://g.test/purchase');
+  assert.equal(sent[2]?.url, 'http://g.test/purchase');
+
+  // Only the final call carries payment; the challenge must go out bare.
+  assert.equal(sent[1]?.headers.get(PAYMENT_HEADER), null);
+  assert.ok(sent[2]?.headers.get(PAYMENT_HEADER));
+
+  assert.equal(selection.product.product_id, 'prod_b');
+  assert.equal(fulfillment.settlement_id, 'stl_1');
+});
+
+test('AgentError identifies itself and carries its context', () => {
+  const error = new AgentError('purchase rejected', 409, { reason: 'assertion_reused' });
+
+  assert.equal(error.name, 'AgentError');
+  assert.equal(error.message, 'purchase rejected');
+  assert.equal(error.status, 409);
+  assert.ok(error instanceof Error);
 });

@@ -40,6 +40,145 @@ func TestListPublishers(t *testing.T) {
 	if publishers[0].PublisherID != testPublisherID || publishers[0].Currency != "USD" {
 		t.Fatalf("publisher decoded wrong: %+v", publishers[0])
 	}
+	// A publisher that has never been paid reports zero rather than failing to
+	// scan a NULL out of the aggregate join.
+	if publishers[0].SettlementCount != 0 || publishers[0].EarnedCents != 0 {
+		t.Fatalf("an unpaid publisher reports %d settlements and %d cents",
+			publishers[0].SettlementCount, publishers[0].EarnedCents)
+	}
+}
+
+// The dashboard ranks by these numbers, and SUM over a bigint column returns
+// numeric, which pgx refuses to scan into an int64. A real database is the
+// only place that failure appears.
+func TestListPublishersCarriesEarningsForRanking(t *testing.T) {
+	store, _ := newStore(t)
+
+	first := confirmOne(t, store, "rank_a")
+	confirmOne(t, store, "rank_b")
+
+	publishers, err := store.ListPublishers(context.Background())
+	if err != nil {
+		t.Fatalf("ListPublishers: %v", err)
+	}
+	if len(publishers) != 1 {
+		t.Fatalf("listed %d publishers, want 1", len(publishers))
+	}
+
+	if publishers[0].SettlementCount != 2 {
+		t.Errorf("settlement count = %d, want 2", publishers[0].SettlementCount)
+	}
+	if want := first.Split.PublisherAmountCents * 2; publishers[0].EarnedCents != want {
+		t.Errorf("earned %d cents, want %d", publishers[0].EarnedCents, want)
+	}
+}
+
+// A refusal and a settlement that fell over describe different outcomes. One
+// says the platform stopped an attempt, the other says it accepted the
+// assertion and the payment failed afterwards. Reporting one number for both
+// would hide which happened.
+func TestListPublishersSeparatesBlockedFromFailed(t *testing.T) {
+	store, _ := newStore(t)
+
+	p := pending("blocked_vs_failed")
+	if err := store.Begin(context.Background(), p); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := store.Fail(context.Background(), p.SettlementID); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+
+	if err := store.RecordRejection(context.Background(), Rejection{
+		PublisherID: testPublisherID,
+		AssertionID: "a_refused",
+		Reason:      "assertion_signature_invalid",
+	}); err != nil {
+		t.Fatalf("RecordRejection: %v", err)
+	}
+
+	publishers, err := store.ListPublishers(context.Background())
+	if err != nil {
+		t.Fatalf("ListPublishers: %v", err)
+	}
+
+	if publishers[0].FailedCount != 1 {
+		t.Errorf("failed count = %d, want 1", publishers[0].FailedCount)
+	}
+	if publishers[0].BlockedCount != 1 {
+		t.Errorf("blocked count = %d, want 1", publishers[0].BlockedCount)
+	}
+	// A failed settlement never confirmed, so it earns nothing.
+	if publishers[0].SettlementCount != 0 || publishers[0].EarnedCents != 0 {
+		t.Errorf("a failed settlement counted as earnings: %+v", publishers[0])
+	}
+}
+
+// A rejection naming a publisher that does not exist is the signal worth
+// keeping, so no foreign key discards it.
+func TestRecordRejectionAcceptsAnUnknownPublisher(t *testing.T) {
+	store, _ := newStore(t)
+
+	if err := store.RecordRejection(context.Background(), Rejection{
+		PublisherID: "pub_999999",
+		Reason:      "assertion_signature_invalid",
+	}); err != nil {
+		t.Fatalf("RecordRejection refused an unknown publisher: %v", err)
+	}
+}
+
+func TestRecentRejectionsReturnsTheNewestFirst(t *testing.T) {
+	store, _ := newStore(t)
+
+	for _, reason := range []string{"assertion_expired", "assertion_signature_invalid"} {
+		if err := store.RecordRejection(context.Background(), Rejection{
+			PublisherID: testPublisherID,
+			Reason:      reason,
+			MerchantID:  "mer_000042",
+		}); err != nil {
+			t.Fatalf("RecordRejection: %v", err)
+		}
+	}
+
+	rows, err := store.RecentRejections(context.Background(), testPublisherID, 10)
+	if err != nil {
+		t.Fatalf("RecentRejections: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rejections, want 2", len(rows))
+	}
+	// Same-timestamp rows tie-break on the identifier, so the newest insert
+	// leads rather than the order the database happened to return.
+	if rows[0].Reason != "assertion_signature_invalid" {
+		t.Errorf("newest row = %q, want assertion_signature_invalid", rows[0].Reason)
+	}
+	if rows[0].MerchantID == nil || *rows[0].MerchantID != "mer_000042" {
+		t.Errorf("merchant did not survive the round trip: %+v", rows[0])
+	}
+	// An absent assertion stays NULL rather than becoming an empty string.
+	if rows[0].AssertionID != nil {
+		t.Errorf("an absent assertion came back as %q", *rows[0].AssertionID)
+	}
+}
+
+func TestRecentRejectionsHonoursItsLimit(t *testing.T) {
+	store, _ := newStore(t)
+
+	for i := 0; i < 5; i++ {
+		if err := store.RecordRejection(context.Background(), Rejection{
+			PublisherID: testPublisherID,
+			Reason:      "assertion_expired",
+		}); err != nil {
+			t.Fatalf("RecordRejection: %v", err)
+		}
+	}
+
+	rows, err := store.RecentRejections(context.Background(), testPublisherID, 3)
+	if err != nil {
+		t.Fatalf("RecentRejections: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Errorf("got %d rows, want the 3 the limit allows", len(rows))
+	}
 }
 
 // Every aggregate in this query returns numeric from Postgres, which pgx

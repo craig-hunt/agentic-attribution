@@ -85,7 +85,18 @@ func (h *Handler) handlePublisherDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "settlements": settlements})
+	rejections, err := h.svc.store.RecentRejections(r.Context(), publisherID, limit)
+	if err != nil {
+		h.log.Error("recent rejections", "publisher_id", publisherID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error(), Reason: reasonInternalError})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"summary":     summary,
+		"settlements": settlements,
+		"rejections":  rejections,
+	})
 }
 
 func (h *Handler) handleChain(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +124,11 @@ type errorResponse struct {
 // assertion returns 409 rather than 400 because the request was well formed and
 // the conflict is with prior state, which tells a retrying client that trying
 // again will never succeed.
+// An internal error describes the platform failing, not an attempt worth
+// showing as blocked fraud. Counting those alongside tampered signatures would
+// inflate the number that carries the security claim.
+const reasonInternalError = "internal_error"
+
 func statusFor(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrAssertionReused):
@@ -135,7 +151,7 @@ func statusFor(err error) (int, string) {
 	case errors.Is(err, ErrFacilitatorUnavailable):
 		return http.StatusBadGateway, "facilitator_unavailable"
 	default:
-		return http.StatusInternalServerError, "internal_error"
+		return http.StatusInternalServerError, reasonInternalError
 	}
 }
 
@@ -157,6 +173,22 @@ func (h *Handler) handleSettle(w http.ResponseWriter, r *http.Request) {
 			"reason", reason,
 			"error", err,
 		)
+
+		// Journalling the refusal must never change the refusal. A failure to
+		// write here gets logged and dropped, because turning a clean 409 into
+		// a 500 would hand a caller a retry signal for a request the platform
+		// has already decided to refuse.
+		if reason != reasonInternalError {
+			if recErr := h.svc.store.RecordRejection(r.Context(), Rejection{
+				PublisherID: req.Assertion.PublisherID,
+				AssertionID: req.Assertion.AssertionID,
+				MerchantID:  req.MerchantID,
+				Reason:      reason,
+				Detail:      err.Error(),
+			}); recErr != nil {
+				h.log.Error("record rejection", "reason", reason, "error", recErr)
+			}
+		}
 
 		writeJSON(w, status, errorResponse{Error: err.Error(), Reason: reason})
 		return

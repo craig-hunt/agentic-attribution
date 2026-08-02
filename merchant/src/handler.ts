@@ -95,7 +95,7 @@ export class PurchaseHandler {
     if (!listing) {
       return {
         status: HTTP_STATUS.NotFound,
-        body: { error: `no listing for ${body.product_id} at ${this.#config.merchantId}` },
+        body: { error: `no listing for ${body.product_id}` },
       };
     }
     if (!listing.inStock) {
@@ -195,7 +195,7 @@ export class PurchaseHandler {
 
     const outcome = await this.#settlement.settle({
       assertion,
-      merchant_id: this.#config.merchantId,
+      merchant_id: listing.merchantId,
       gross_amount_cents: listing.priceCents,
       currency: listing.currency,
       payment_payload: payment,
