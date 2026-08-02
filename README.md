@@ -220,7 +220,8 @@ Full setup, troubleshooting, and how to settle against live Base Sepolia:
 nothing to read first.
 
 ```
-[ Run one purchase ]  [ Start agents ]  [ Stop ]   Agents [6]   [ ] Include fraud attempts
+[ Run one purchase ] [ Start agents ] [ Stop ]  Agents [6]  [ ] Include fraud
+                        12 settled · 3 blocked · 0 failed · all · 6 agents running
 ```
 
 **Run one purchase** sends a single agent through search, a 402 challenge, a
@@ -237,9 +238,15 @@ Open the network tab and watch if you like; that is rather the point.
 
 ### Watching fraud get refused
 
-Tick **Include fraud attempts** and roughly a third of the agents start
-presenting tampered assertions: a redirected publisher, an inflated commission
-rate, a backdated expiry, a forged signature, a publisher that does not exist.
+Tick **Include fraud attempts** and roughly a third of a running population
+starts presenting tampered assertions: a redirected publisher, an inflated
+commission rate, a backdated expiry, a forged signature, a publisher that does
+not exist.
+
+**With the box ticked, "Run one purchase" sends fraud every time.** A single
+click has no population to average over, so a one-in-three chance would leave
+you pressing the button and watching an ordinary purchase settle, concluding the
+option does nothing.
 
 **None of them earn anything.** The Blocked column climbs while Earned does not,
 and each publisher's page lists what was refused and why. The verification paths
@@ -249,6 +256,28 @@ demonstration adds the attacker, not the defence.
 That column is the security argument made visible. Everything else on the
 dashboard shows money arriving where it should. This shows money failing to
 arrive where it should not.
+
+### Narrowing and reordering the table
+
+**The three counters are filters.** Press `blocked` to show only publishers with
+refused attempts, press it again to clear, or press `all` to reset. Both the
+filter and the sort survive the live refresh, so a running population does not
+snap the table back while you are reading it.
+
+**Every column sorts.** Earned leads by default, descending. A second press on
+the same column reverses it, and a different column starts descending, because
+the interesting end of every column here is the large end. Ties break on
+publisher identifier, so rows never shuffle between refreshes. The settlements
+and blocked-attempt tables on each publisher's page sort the same way.
+
+**Blocked and Failed count different things.** Blocked means the platform
+refused an attempt, by signature, expiry, or single-use enforcement. Failed
+means the platform accepted the assertion and the payment fell over afterwards,
+so nobody defrauded anyone and nobody got paid either.
+
+**Expect Failed to read zero.** The mock facilitator always succeeds, so nothing
+fails during an ordinary run. The column and its filter both work; there is
+simply nothing to show unless the facilitator errors.
 
 ### Following one purchase end to end
 
@@ -326,8 +355,13 @@ make mutate-docker    # Stryker and Infection in containers
 `make smoke-cold` wipes the volumes, starts every service, seeds the catalog,
 drives a purchase through search, 402, payment, and settlement, replays the
 assertion to confirm the second attempt fails, then asserts the settlement API
-and the dashboard both report what happened. It exits non-zero on any failed
-assertion, and CI runs it on every push.
+and the dashboard both report what happened.
+
+It also drives the dashboard's own controls: firing a single purchase from the
+page, sending a tampered assertion through the same path to confirm it gets
+blocked rather than settled, checking the refusal reaches the publisher table,
+and starting and stopping a live population. Twenty-two checks in all. It exits
+non-zero on any failed assertion, and CI runs it on every push.
 
 **It exists because the other suites cannot catch what it catches.** Each of
 them tests a service against a stub of its neighbours, and a stub encodes what
@@ -338,9 +372,14 @@ does not help here either: it measures whether the tests notice a change to the
 *code*, and it cannot mutate a wrong assumption about OpenSearch. A high kill
 ratio against a wrong stub pins the wrong behaviour tightly.
 
-Running the real thing found an Elasticsearch-only field type in the index
-mapping, an ML model used before deployment finished, and an OpenSearch heap
-that crashed partway through the catalog. Every unit suite passed throughout.
+Running the real thing found ten defects: an Elasticsearch-only field type in
+the index mapping, a model used before its deployment finished, a heap that
+crashed partway through the catalog, a k-NN library that failed to load, an
+ingest processor silently stripping the fields of every nested object, and
+default merchant and publisher identifiers that had never existed in any
+generated catalog. Two of them made the purchase flow impossible, so `make
+demo` had never once completed. Every unit suite passed throughout, at the kill
+ratios below.
 
 Or on the host, if you have the toolchains installed:
 
