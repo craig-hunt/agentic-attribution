@@ -49,3 +49,41 @@ func TestReportProgressSkipsAnEmptyCatalog(t *testing.T) {
 		t.Errorf("reported progress against an empty catalog: %s", out.String())
 	}
 }
+
+// A batch landing inside the clock's resolution would divide by zero. The line
+// still has to say something useful, because "+Inf docs/sec" reads as a broken
+// ingest rather than a fast first batch.
+func TestReportProgressSurvivesAZeroDuration(t *testing.T) {
+	var out bytes.Buffer
+	p := &Pipeline{out: &out}
+
+	p.reportProgress(2000, 20000, 0)
+
+	line := out.String()
+	if line == "" {
+		t.Fatal("a zero duration reported nothing at all")
+	}
+	for _, unwanted := range []string{"Inf", "NaN"} {
+		if strings.Contains(line, unwanted) {
+			t.Errorf("progress line contains %s: %s", unwanted, line)
+		}
+	}
+	for _, want := range []string{"2000", "20000", "10%"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("progress line omits %q: %s", want, line)
+		}
+	}
+}
+
+func TestReportProgressRejectsANegativeDuration(t *testing.T) {
+	var out bytes.Buffer
+	p := &Pipeline{out: &out}
+
+	// A clock adjustment mid-run can hand back a negative elapsed time, which
+	// would print a negative rate and a remaining time in the past.
+	p.reportProgress(2000, 20000, -time.Second)
+
+	if line := out.String(); strings.Contains(line, "-") {
+		t.Errorf("a negative duration produced a negative figure: %s", line)
+	}
+}

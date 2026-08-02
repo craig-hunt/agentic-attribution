@@ -137,6 +137,48 @@ test('an unusable amount throws rather than converting quietly', () => {
   }
 });
 
+// A value the type cannot hold encodes to typed data no contract will agree
+// with. Every caller here sees a signature that looks valid, and the mismatch
+// surfaces on-chain as failed recovery or a revert, pointing nowhere near the
+// field that overflowed.
+test('a value above the uint256 ceiling throws rather than encoding', () => {
+  const maxUint256 = 2n ** 256n - 1n;
+
+  for (const field of ['value', 'validAfter', 'validBefore'] as const) {
+    const authorization = {
+      from: '0x1',
+      to: '0x2',
+      value: '1',
+      validAfter: '0',
+      validBefore: '1',
+      nonce: '0x0',
+    };
+
+    assert.throws(
+      () => toTypedMessage({ ...authorization, [field]: (maxUint256 + 1n).toString() }),
+      new RegExp(`${field} exceeds uint256`),
+      `${field} accepted a value the type cannot hold`,
+    );
+  }
+});
+
+// The ceiling itself stays valid. Rejecting it would refuse an authorization
+// the contract accepts, which is the opposite failure and just as wrong.
+test('the largest representable value still converts', () => {
+  const maxUint256 = 2n ** 256n - 1n;
+
+  const message = toTypedMessage({
+    from: '0x1',
+    to: '0x2',
+    value: maxUint256.toString(),
+    validAfter: '0',
+    validBefore: '1',
+    nonce: '0x0',
+  });
+
+  assert.equal(message.value, maxUint256);
+});
+
 // Hex passes through on purpose. x402 specifies decimal strings, and a
 // counterparty sending hex means a wide-enough integer either way, so
 // rejecting it would break interop for no safety gain.

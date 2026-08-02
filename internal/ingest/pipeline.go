@@ -252,6 +252,16 @@ func (p *Pipeline) reportProgress(done, total int64, elapsed time.Duration) {
 	}
 
 	percent := float64(done) / float64(total) * 100
+
+	// A batch that lands inside the clock's resolution divides by zero and
+	// prints "+Inf docs/sec", which reads as a bug in the ingest rather than a
+	// fast first batch. Reporting the count alone stays honest until there is
+	// enough elapsed time to derive a rate from.
+	if elapsed <= 0 {
+		p.logf("  indexed %7d / %d  (%3.0f%%)\n", done, total, percent)
+		return
+	}
+
 	rate := float64(done) / elapsed.Seconds()
 
 	remaining := time.Duration(float64(total-done)/rate) * time.Second

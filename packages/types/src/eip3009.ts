@@ -109,6 +109,8 @@ export function toTypedMessage(authorization: {
  * on the amount check afterwards, which is a poor place to learn that a field
  * never arrived.
  */
+const MAX_UINT256 = 2n ** 256n - 1n;
+
 function toUint256(raw: string, field: string): bigint {
   if (raw.trim() === '') {
     throw new TypeError(`${field} is empty; a uint256 field needs a decimal string`);
@@ -123,6 +125,14 @@ function toUint256(raw: string, field: string): bigint {
 
   if (value < 0n) {
     throw new TypeError(`${field} is negative: ${raw}`);
+  }
+
+  // A value above the type's ceiling encodes to typed data the contract will
+  // never agree with. Accepting it produces a signature that looks valid to
+  // every caller here and either mismatches on-chain recovery or reverts, and
+  // the failure surfaces at settlement with nothing pointing back to here.
+  if (value > MAX_UINT256) {
+    throw new TypeError(`${field} exceeds uint256: ${raw}`);
   }
 
   return value;

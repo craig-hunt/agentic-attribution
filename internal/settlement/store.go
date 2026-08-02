@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -249,12 +250,23 @@ func (s *Store) RecordRejection(ctx context.Context, r Rejection) error {
 
 const maxRejectionDetail = 500
 
+// truncateDetail cuts on a rune boundary rather than a byte offset. Slicing
+// mid-rune yields invalid UTF-8, Postgres refuses it on a text column, and the
+// insert fails. RecordRejection logs and drops that error deliberately, so a
+// merchant name or an upstream message carrying non-ASCII would make the
+// refusal vanish without a trace, which is the one outcome this table exists
+// to prevent.
 func truncateDetail(s string) string {
 	if len(s) <= maxRejectionDetail {
 		return s
 	}
 
-	return s[:maxRejectionDetail] + "..."
+	cut := maxRejectionDetail
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+
+	return s[:cut] + "..."
 }
 
 // nullable keeps an absent identifier out of the column as NULL rather than as
