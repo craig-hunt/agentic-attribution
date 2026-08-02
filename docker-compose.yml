@@ -222,6 +222,53 @@ services:
       DEMO_QUERY: ${DEMO_QUERY:-trail running shoes}
       DEMO_PUBLISHER_ID: ${DEMO_PUBLISHER_ID:-pub_000001}
 
+  # The end-to-end regression suite, on the compose network so a reviewer needs
+  # only Docker. Reaches services by name rather than through published ports,
+  # which is also how it reaches the driver: that service publishes no port and
+  # the dashboard proxies to it.
+  #
+  # Authoring specs happens on the host instead, where `cypress open` gives a
+  # runner and time travel. See cypress-tests/README.md.
+  cypress:
+    build:
+      context: .
+      dockerfile: docker/cypress.Dockerfile
+    profiles: ["e2e"]
+    environment:
+      CYPRESS_DASHBOARD_BASE_URL: http://app:8000
+      CYPRESS_GATEWAY_BASE_URL: http://gateway:8080
+      CYPRESS_SETTLEMENT_BASE_URL: http://settlement:8082
+    shm_size: 2gb
+    depends_on:
+      postgres: { condition: service_healthy }
+      opensearch: { condition: service_healthy }
+
+  # The same image, showing its browser instead of hiding it.
+  #
+  # cypress/included already carries Chrome, Firefox, Electron, and every
+  # library they need, so nothing has to be installed on the host. What it
+  # lacks is somewhere to draw, and mounting the X socket supplies that:
+  # WSLg on Windows 11, or a native X server on Linux. Specs bind-mount rather
+  # than copy, so editing one reruns it without rebuilding the image.
+  cypress-open:
+    build:
+      context: .
+      dockerfile: docker/cypress.Dockerfile
+    profiles: ["e2e-open"]
+    environment:
+      DISPLAY: ${DISPLAY:-:0}
+      CYPRESS_DASHBOARD_BASE_URL: http://app:8000
+      CYPRESS_GATEWAY_BASE_URL: http://gateway:8080
+      CYPRESS_SETTLEMENT_BASE_URL: http://settlement:8082
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./cypress-tests/cypress:/suite/cypress
+      - ./cypress-tests/cypress.config.ts:/suite/cypress.config.ts:ro
+    # Chrome maps a large shared-memory segment and crashes partway through a
+    # run against Docker's 64MB default.
+    shm_size: 2gb
+    command: ["npx", "cypress", "open", "--e2e"]
+
   # Every suite, runnable with Docker alone. A reviewer reproduces the numbers
   # rather than taking them on faith, without installing Go, Node, PHP,
   # Composer, or a coverage driver.

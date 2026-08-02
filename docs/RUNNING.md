@@ -251,6 +251,28 @@ the canonical signing bytes fails a test rather than a settlement.
 Linux: `sudo sysctl -w vm.max_map_count=262144`. Under Docker Desktop, raise the
 memory allocation to 6GB.
 
+**`npx cypress run` fails with `error while loading shared libraries:
+libnss3.so`.** Cypress ships a browser needing system libraries a minimal WSL
+install does not carry. This is specific to WSL: Windows and macOS already have
+them, so running the suite from PowerShell or a mac terminal needs no extra
+setup. `make e2e` needs none of it anywhere, because the image carries its own
+browser, and that is the path CI uses.
+
+`make e2e-open` also runs the interactive runner from inside the container,
+drawing on your desktop through the X socket. That needs no libraries on the
+host either, only a display: WSLg supplies one on Windows 11, and a desktop
+session supplies one on Linux.
+
+To run it inside WSL directly instead, install what Cypress lists:
+
+```bash
+sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev \
+  libnss3 libxss1 libasound2t64 libxtst6 xauth xvfb
+```
+
+Under WSL the interactive runner also needs an X server, which WSLg provides on
+Windows 11. Without one, `cypress open` starts and renders nothing.
+
 **`make seed` fails with `bulk index: Post "http://opensearch:9200/_bulk":
 EOF`.** The cluster died mid-request, so ingest lost the connection rather than
 receiving an error. Confirm it:
