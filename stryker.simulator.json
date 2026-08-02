@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Run from the repository root: these tests read the Go-minted fixture in packages/types by relative filesystem path, which a package-local sandbox cannot resolve. index.ts, driver.ts, and smoke.ts are excluded as executable entry points: each runs on import, each is exercised by the smoke gate rather than by unit tests, and mutating a top-level side effect measures nothing about assertion quality. The logic they carry lives in runner.ts and agent.ts, which are mutated.",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "npx tsx --test simulator/src/*.test.ts"
+  },
+  "mutate": [
+    "simulator/src/**/*.ts",
+    "!simulator/src/**/*.test.ts",
+    "!simulator/src/index.ts",
+    "!simulator/src/driver.ts",
+    "!simulator/src/smoke.ts"
+  ],
+  "ignorePatterns": [
+    "node_modules",
+    ".git",
+    ".stryker-tmp",
+    "db/seed",
+    "app",
+    "cypress",
+    "internal",
+    "cmd",
+    "docs",
+    "opensearch",
+    "docker"
+  ],
+  "coverageAnalysis": "off",
+  "reporters": [
+    "clear-text",
+    "progress"
+  ],
+  "timeoutMS": 30000,
+  "concurrency": 4,
+  "thresholds": {
+    "high": 85,
+    "low": 70,
+    "break": 70
+  },
+  "tempDirName": ".stryker-tmp/simulator",
+  "cleanTempDir": true
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Run from the repository root rather than from gateway/. The gateway's tests read the Go-minted fixture and walk the import graph into packages/types by relative filesystem path, and a sandbox holding only gateway/ cannot resolve either.",
+  "testRunner": "command",
+  "commandRunner": { "command": "npx tsx --test gateway/src/*.test.ts" },
+  "mutate": ["gateway/src/**/*.ts", "!gateway/src/**/*.test.ts", "!gateway/src/node.ts"],
+  "ignorePatterns": [
+    "node_modules", ".git", ".stryker-tmp", "db/seed", "app", "cypress",
+    "internal", "cmd", "docs", "opensearch", "docker"
+  ],
+  "coverageAnalysis": "off",
+  "reporters": ["clear-text", "progress"],
+  "timeoutMS": 30000,
+  "concurrency": 4,
+  "thresholds": { "high": 85, "low": 70, "break": 70 },
+  "tempDirName": ".stryker-tmp/gateway",
+  "cleanTempDir": true
+}

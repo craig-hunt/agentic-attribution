@@ -4,7 +4,7 @@ import { Agent, AgentError, type Fulfillment, type Selection } from './agent.js'
 
 const DEFAULT_GATEWAY = 'http://localhost:8080';
 const DEFAULT_QUERY = 'trail running shoes';
-const DEFAULT_PUBLISHER = 'pub_0001';
+const DEFAULT_PUBLISHER = 'pub_000001';
 
 function envOr(name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback;

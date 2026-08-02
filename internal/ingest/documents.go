@@ -23,9 +23,9 @@ type MerchantOffer struct {
 	DeepLinkURL   string `json:"deep_link_url"`
 }
 
-// ProductDocument is what OpenSearch stores. EmbeddingSource exists only to
-// feed the text_embedding processor and gets removed by the ingest pipeline
-// before the document is written.
+// ProductDocument is what OpenSearch stores. EmbeddingSource feeds the model
+// and never reaches the index, so it carries no JSON tag. Embedding holds the
+// vector the ingest run generates before indexing.
 type ProductDocument struct {
 	ProductID        string            `json:"product_id"`
 	CanonicalTitle   string            `json:"canonical_title"`
@@ -33,7 +33,8 @@ type ProductDocument struct {
 	Brand            string            `json:"brand"`
 	CategoryID       string            `json:"category_id"`
 	Attributes       map[string]string `json:"attributes"`
-	EmbeddingSource  string            `json:"embedding_source"`
+	EmbeddingSource  string            `json:"-"`
+	Embedding        []float32         `json:"embedding,omitempty"`
 	OfferCount       int               `json:"offer_count"`
 	MinPriceCents    int64             `json:"min_price_cents"`
 	MaxPriceCents    int64             `json:"max_price_cents"`

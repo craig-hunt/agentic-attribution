@@ -24,13 +24,59 @@ from WSL rather than PowerShell, since the targets assume a POSIX shell.
 **Docker and `make` run the demo between them.** The containers carry their own
 toolchains, so nothing else needs installing.
 
-`make keys` is the one target that would otherwise want a host toolchain. It
+`make keys` alone would otherwise want a host toolchain. It
 uses Go when it finds Go on the `PATH`, and otherwise builds a small container
 and generates the keypair there. The container path costs roughly a minute on
 first run while the Go image builds, and produces an identical keypair.
 
-Allow Docker roughly 4GB of memory. OpenSearch takes 1GB of heap and refuses to
-start with less headroom than that.
+Allow Docker roughly 6GB of memory. OpenSearch claims 2GB of heap by default,
+and it earns that: neural ingest runs model inference inside the cluster, so a
+single bulk batch holds the request, the vectors it generates, the HNSW graph
+under construction, and the indexing buffer at the same time. A smaller heap
+does not degrade, it crashes the node partway through the catalog, and ingest
+then reports `EOF` on `_bulk`.
+
+A machine with less to spare seeds a smaller catalog instead:
+
+```bash
+OPENSEARCH_HEAP=1g make seed CANONICAL_PRODUCTS=5000
+```
+
+---
+
+## Running without make
+
+The targets use a POSIX shell, so Windows users either work from WSL or drive
+compose directly. These four commands cover the same ground and run anywhere
+Docker does, PowerShell included.
+
+```powershell
+# 1. Generate the keypair. Redirect it outside the repository.
+mkdir -Force "$env:USERPROFILE\.agentic-attribution"
+docker build -q -f docker/go.Dockerfile -t agentic-attribution-tools .
+docker run --rm agentic-attribution-tools keygen `
+  | Out-File -Encoding ascii "$env:USERPROFILE\.agentic-attribution\env"
+Add-Content "$env:USERPROFILE\.agentic-attribution\env" `
+  "MERCHANT_PAY_TO_ADDRESS=0x1111111111111111111111111111111111111111"
+
+$env:ENV_FILE = "$env:USERPROFILE\.agentic-attribution\env"
+
+# 2. Start everything
+docker compose --env-file $env:ENV_FILE up -d --build
+
+# 3. Generate the catalog and load it
+docker compose --env-file $env:ENV_FILE --profile seed up --build `
+  --abort-on-container-failure generate ingest
+
+# 4. Drive the agent through the whole loop
+docker compose --env-file $env:ENV_FILE --profile demo run --rm --build simulator
+```
+
+The same commands work in bash with `$ENV_FILE` in place of `$env:ENV_FILE`.
+
+**One caution on the key file.** PowerShell offers no `chmod`, so the file
+carries whatever the parent directory grants. Put it somewhere only your account
+can read, which `%USERPROFILE%` already provides on a single-user machine.
 
 ---
 
@@ -55,11 +101,12 @@ Then open the publisher dashboard at **http://localhost:8000**.
 `~/.agentic-attribution/env` by default. Nothing in the working tree ever holds
 a signing key.
 
-That placement is deliberate rather than fussy. Gitignoring a key file stops it
-being committed; it does nothing to stop it being read. Editor extensions,
+That placement reflects deliberation rather than fuss. Gitignoring a key file
+stops anyone committing it and does nothing to stop anyone reading it. Editor
+extensions,
 language servers, AI coding assistants, and any dependency with a postinstall
 script all hold filesystem access to a project directory. A key inside the tree
-is a key inside every one of their reach.
+sits inside every one of their reach.
 
 The same reasoning explains why this repository ships **no `.env.example`**. A
 template in the project root invites `cp .env.example .env`, which puts key
@@ -87,13 +134,12 @@ rather than reading a `./.env` by convention, so no key file needs to sit beside
 | `MERCHANT_PAY_TO_ADDRESS` | `make keys` | merchant, as the x402 payee |
 
 Only the minting service ever sees the private half. Verifiers hold the public
-key and nothing else, which is the entire reason for an asymmetric scheme: a
-verifier cannot forge what it can only check.
+key and nothing else, which explains the entire reason for an asymmetric
+scheme: a verifier cannot forge what it can only check.
 
 Rotating means deleting the file and running `make keys` again. Assertions
-signed under the old key stop verifying immediately, which is the intended
-behaviour rather than a migration problem, because assertions expire in an hour
-anyway.
+signed under the old key stop verifying immediately, the intended behaviour
+rather than a migration problem, because assertions expire in an hour anyway.
 
 ---
 
@@ -110,7 +156,7 @@ unlogged staging table and swaps partitions atomically, registers the ONNX
 embedding model, builds a versioned index with refresh disabled and replicas at
 zero, force merges, and swaps the alias onto it.
 
-This is the slow step. The embedding model downloads on first run.
+That step takes the longest. The embedding model downloads on first run.
 
 Raise or lower the catalog size with `CANONICAL_PRODUCTS`:
 
@@ -121,8 +167,8 @@ make seed CANONICAL_PRODUCTS=150000
 **`make demo`** runs the agent: search, 402 challenge, EIP-3009 signature,
 payment, settlement, commission split. It prints the attribution chain, then
 replays the same assertion and requires a 409. It exits non-zero if the replay
-succeeds, because a single-use guarantee nobody exercises is a claim rather
-than a property.
+succeeds, because a single-use guarantee nobody exercises amounts to a claim
+rather than a property.
 
 ---
 
@@ -155,7 +201,7 @@ docker compose exec postgres psql -U agentic -d agentic \
   -c 'select settlement_id, sum(amount_cents) from ledger_entries group by 1 having sum(amount_cents) <> 0'
 ```
 
-That last query returning no rows is the strongest single check in the system.
+That last query returning no rows constitutes the strongest single check in the system.
 
 ---
 
@@ -164,7 +210,7 @@ That last query returning no rows is the strongest single check in the system.
 The mock facilitator runs by default so a first run needs no wallet. The agent
 still performs genuine EIP-3009 typed-data signing in both modes, and the mock
 verifies those signatures with real EIP-712 recovery. Only the on-chain transfer
-is simulated.
+covers only the on-chain transfer.
 
 To settle against the live testnet, add to your key file:
 
@@ -203,12 +249,25 @@ the canonical signing bytes fails a test rather than a settlement.
 
 **OpenSearch exits immediately.** Almost always `vm.max_map_count`. Under WSL or
 Linux: `sudo sysctl -w vm.max_map_count=262144`. Under Docker Desktop, raise the
-memory allocation to 4GB.
+memory allocation to 6GB.
+
+**`make seed` fails with `bulk index: Post "http://opensearch:9200/_bulk":
+EOF`.** The cluster died mid-request, so ingest lost the connection rather than
+receiving an error. Confirm it:
+
+```bash
+docker compose logs opensearch | grep -i outofmemory
+```
+
+A fatal `OutOfMemoryError` there means the heap could not hold a bulk batch
+alongside in-cluster model inference. Give Docker more memory, or seed a
+smaller catalog with `OPENSEARCH_HEAP=1g make seed CANONICAL_PRODUCTS=5000`.
+The `EOF` names the symptom; the cause always sits in the OpenSearch log.
 
 **`make up` fails with `required variable ATTRIBUTION_PUBLIC_KEY is missing`.**
 Run `make keys`, or set `ENV_FILE` to wherever your existing key file lives.
 
-**`make seed` appears to hang.** The embedding model is downloading. Watch it
+**`make seed` appears to hang.** The embedding model downloads. Watch it
 with `make logs`.
 
 **The dashboard shows "No settlements yet."** Expected until `make demo` runs.
@@ -217,6 +276,44 @@ The dashboard reads confirmed settlements only, so a failed run shows nothing.
 **A second keypair appeared.** Running `make keys` without `ENV_FILE` set
 creates one at the default path even when your real key file lives elsewhere.
 Delete the stray directory and export `ENV_FILE` in your shell profile.
+
+**A build fails with `error getting credentials - err: exit status 1, out:` and
+nothing after it.** Two causes produce that message, and neither concerns
+credentials. Every image this stack pulls sits in a public registry, so nothing
+here needs a login.
+
+*First, check your working directory.* A message like `make: getcwd: No such
+file or directory` alongside the build failure gives it away. Every target that
+runs Docker now checks this first and stops with the real diagnosis, so a
+current checkout reports the cause rather than the credentials error.
+
+```bash
+pwd || cd /path/to/agentic-attribution
+```
+
+Docker Desktop on Windows installs a credential helper that runs as a Windows
+executable, and WSL launches it through interop. Interop translates your current
+directory to a Windows path to do that, so a stale directory handle breaks the
+launch. The helper exits 1 with empty output, and Docker reports the only thing
+it can see: a credentials failure. Remounting `/mnt/c`, restarting Docker
+Desktop, or leaving a shell idle can all invalidate the handle. Change into the
+directory again, or open a fresh shell.
+
+*Second, check the helper exists.* If your working directory checks out:
+
+```bash
+grep credsStore ~/.docker/config.json
+which docker-credential-desktop.exe
+```
+
+A `credsStore` naming a helper that `which` cannot find means Docker Desktop's
+PATH integration for this distribution stays switched off. Enable it under
+Docker Desktop, Settings, Resources, WSL Integration. Failing that, every image
+this stack pulls sits in a public registry, so removing the entry works:
+
+```bash
+echo '{}' > ~/.docker/config.json
+```
 
 **Starting clean.** `make clean` stops everything and deletes the volumes, so
 the next `make seed` starts from an empty database and an empty index. It leaves

@@ -54,3 +54,10 @@ bench/*.json
 *.swp
 .DS_Store
 Thumbs.db
+
+# Mutation and test tooling output
+.stryker-tmp/
+app/.phpunit.cache/
+app/infection.log
+app/vendor/
+reports/

@@ -21,6 +21,20 @@ type Publisher struct {
 	PublisherID string `json:"publisher_id"`
 	Name        string `json:"name"`
 	Currency    string `json:"payout_currency"`
+	// Carried on the list so the dashboard can show which publishers have
+	// earned anything. A list of names alone gives a reader no way to tell an
+	// active publisher from the forty-seven that have never been paid, so the
+	// first row they click is almost always an empty page.
+	SettlementCount int64 `json:"settlement_count"`
+	EarnedCents     int64 `json:"earned_cents"`
+	// Attempts the platform refused in this publisher's name. A live view of
+	// this column is the only place attribution integrity becomes visible
+	// rather than merely claimed.
+	BlockedCount int64 `json:"blocked_count"`
+	// Settlements that started and never confirmed. Distinct from blocked: the
+	// platform accepted the assertion and the payment fell over afterwards, so
+	// nobody defrauded anybody and nobody got paid either.
+	FailedCount int64 `json:"failed_count"`
 }
 
 type PublisherSummary struct {
@@ -32,6 +46,7 @@ type PublisherSummary struct {
 	SearchRequests    int64 `json:"search_request_count"`
 	AssertionsIssued  int64 `json:"assertions_consumed"`
 	AverageCommission int   `json:"average_commission_bps"`
+	BlockedCount      int64 `json:"blocked_count"`
 }
 
 type SettlementRow struct {
@@ -86,12 +101,41 @@ type Chain struct {
 }
 
 func (s *Store) ListPublishers(ctx context.Context) ([]Publisher, error) {
+	// Earners first, so whoever opens the dashboard lands on a publisher with
+	// something to show. SUM over a bigint column returns numeric, which pgx
+	// refuses to scan into an int64, hence the cast.
 	const q = `
-		SELECT publisher_id, name, payout_currency
-		FROM publishers
-		ORDER BY publisher_id`
+		SELECT
+			p.publisher_id,
+			p.name,
+			p.payout_currency,
+			COALESCE(s.settlement_count, 0),
+			COALESCE(s.publisher_cents, 0),
+			COALESCE(b.blocked_count, 0),
+			COALESCE(f.failed_count, 0)
+		FROM publishers p
+		LEFT JOIN (
+			SELECT publisher_id,
+			       COUNT(*)                            AS settlement_count,
+			       SUM(publisher_amount_cents)::bigint AS publisher_cents
+			FROM settlements
+			WHERE status = $1
+			GROUP BY publisher_id
+		) s ON s.publisher_id = p.publisher_id
+		LEFT JOIN (
+			SELECT publisher_id, COUNT(*) AS blocked_count
+			FROM rejected_attempts
+			GROUP BY publisher_id
+		) b ON b.publisher_id = p.publisher_id
+		LEFT JOIN (
+			SELECT publisher_id, COUNT(*) AS failed_count
+			FROM settlements
+			WHERE status = $2
+			GROUP BY publisher_id
+		) f ON f.publisher_id = p.publisher_id
+		ORDER BY COALESCE(s.publisher_cents, 0) DESC, p.publisher_id`
 
-	rows, err := s.pool.Query(ctx, q)
+	rows, err := s.pool.Query(ctx, q, StatusConfirmed, StatusFailed)
 	if err != nil {
 		return nil, fmt.Errorf("list publishers: %w", err)
 	}
@@ -100,7 +144,8 @@ func (s *Store) ListPublishers(ctx context.Context) ([]Publisher, error) {
 	out := make([]Publisher, 0)
 	for rows.Next() {
 		var p Publisher
-		if err := rows.Scan(&p.PublisherID, &p.Name, &p.Currency); err != nil {
+		if err := rows.Scan(&p.PublisherID, &p.Name, &p.Currency,
+			&p.SettlementCount, &p.EarnedCents, &p.BlockedCount, &p.FailedCount); err != nil {
 			return nil, fmt.Errorf("scan publisher: %w", err)
 		}
 		out = append(out, p)
@@ -124,7 +169,8 @@ func (s *Store) PublisherSummary(ctx context.Context, publisherID string) (Publi
 			COALESCE(s.platform_cents, 0),
 			COALESCE(s.avg_bps, 0),
 			COALESCE(r.search_count, 0),
-			COALESCE(a.assertion_count, 0)
+			COALESCE(a.assertion_count, 0),
+			COALESCE(b.blocked_count, 0)
 		FROM publishers p
 		LEFT JOIN (
 			-- Every aggregate carries an explicit cast. Postgres returns
@@ -150,6 +196,10 @@ func (s *Store) PublisherSummary(ctx context.Context, publisherID string) (Publi
 			SELECT publisher_id, COUNT(*) AS assertion_count
 			FROM consumed_assertions GROUP BY publisher_id
 		) a ON a.publisher_id = p.publisher_id
+		LEFT JOIN (
+			SELECT publisher_id, COUNT(*) AS blocked_count
+			FROM rejected_attempts GROUP BY publisher_id
+		) b ON b.publisher_id = p.publisher_id
 		WHERE p.publisher_id = $1`
 
 	var out PublisherSummary
@@ -157,7 +207,7 @@ func (s *Store) PublisherSummary(ctx context.Context, publisherID string) (Publi
 		&out.PublisherID, &out.Name, &out.Currency,
 		&out.SettlementCount, &out.GrossAmountCents, &out.EarnedCents,
 		&out.PlatformFeeCents, &out.AverageCommission,
-		&out.SearchRequests, &out.AssertionsIssued,
+		&out.SearchRequests, &out.AssertionsIssued, &out.BlockedCount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PublisherSummary{}, fmt.Errorf("publisher %s: %w", publisherID, pgx.ErrNoRows)
@@ -270,4 +320,42 @@ func (s *Store) Chain(ctx context.Context, settlementID string) (Chain, error) {
 	}
 
 	return c, rows.Err()
+}
+
+// RejectionRow is one refused attempt, for the publisher detail view.
+type RejectionRow struct {
+	Reason      string    `json:"reason"`
+	AssertionID *string   `json:"assertion_id"`
+	MerchantID  *string   `json:"merchant_id"`
+	Detail      *string   `json:"detail"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// RecentRejections returns the newest refused attempts for one publisher. The
+// dashboard shows these beside the settlements, so a viewer sees what the
+// platform let through and what it stopped in the same place.
+func (s *Store) RecentRejections(ctx context.Context, publisherID string, limit int) ([]RejectionRow, error) {
+	const q = `
+		SELECT reason, assertion_id, merchant_id, detail, created_at
+		FROM rejected_attempts
+		WHERE publisher_id = $1
+		ORDER BY created_at DESC, attempt_id DESC
+		LIMIT $2`
+
+	rows, err := s.pool.Query(ctx, q, publisherID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent rejections: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]RejectionRow, 0)
+	for rows.Next() {
+		var r RejectionRow
+		if err := rows.Scan(&r.Reason, &r.AssertionID, &r.MerchantID, &r.Detail, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan rejection: %w", err)
+		}
+		out = append(out, r)
+	}
+
+	return out, rows.Err()
 }

@@ -10,6 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Roughly ten lines across the default catalog: often enough that the run
+// clearly moves, rare enough that the output stays readable.
+const progressInterval = 2000
+
 type Options struct {
 	SeedDir            string
 	MappingPath        string
@@ -101,14 +105,15 @@ func (p *Pipeline) Run(ctx context.Context, opts Options) (Result, error) {
 		p.logf("  model_id %s\n", modelID)
 	}
 
-	if modelID != "" {
-		template, err := os.ReadFile(opts.EmbeddingPipeline)
+	// A reload skips registration and reuses whatever the cluster already has
+	// deployed. Embedding happens in this process now, so the run needs the
+	// identifier either way.
+	if modelID == "" {
+		modelID, err = p.search.DeployedModelID(ctx)
 		if err != nil {
-			return result, fmt.Errorf("read embedding pipeline: %w", err)
-		}
-		if err := p.search.CreateEmbeddingPipeline(ctx, modelID, string(template)); err != nil {
 			return result, err
 		}
+		p.logf("\nopensearch: reusing deployed model %s\n", modelID)
 	}
 
 	searchPipeline, err := os.ReadFile(opts.SearchPipelinePath)
@@ -128,11 +133,49 @@ func (p *Pipeline) Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	p.logf("\nopensearch: created %s (refresh -1, replicas 0, async translog)\n", result.IndexName)
 
+	// Counted before indexing rather than after, so the progress lines below
+	// carry a denominator. The same figure validates the finished index.
+	expected, err := p.docs.CountProducts(ctx)
+	if err != nil {
+		return result, fmt.Errorf("count expected products: %w", err)
+	}
+
 	// Bulk index. The four tuning settings are already applied by the mapping,
 	// so throughput here reflects them.
+	//
+	// Embedding every product through the model dominates this phase and takes
+	// minutes on the default catalog. Reporting only the total afterwards
+	// leaves whoever ran it watching several minutes of nothing, unable to tell
+	// a slow run from a wedged one, so progress reports as it goes.
 	start := time.Now()
+	done := int64(0)
+	nextReport := int64(progressInterval)
+
 	indexed, err := p.docs.Stream(ctx, BulkBatchSize, func(batch []ProductDocument) error {
-		return p.search.BulkIndex(ctx, result.IndexName, batch)
+		texts := make([]string, len(batch))
+		for i, doc := range batch {
+			texts[i] = doc.EmbeddingSource
+		}
+
+		vectors, err := p.search.Embed(ctx, modelID, texts)
+		if err != nil {
+			return err
+		}
+		for i := range batch {
+			batch[i].Embedding = vectors[i]
+		}
+
+		if err := p.search.BulkIndex(ctx, result.IndexName, batch); err != nil {
+			return err
+		}
+
+		done += int64(len(batch))
+		if done >= nextReport || done == expected {
+			p.reportProgress(done, expected, time.Since(start))
+			nextReport = done + progressInterval
+		}
+
+		return nil
 	})
 	if err != nil {
 		return result, fmt.Errorf("bulk index: %w", err)
@@ -141,13 +184,6 @@ func (p *Pipeline) Run(ctx context.Context, opts Options) (Result, error) {
 	bulkTiming := PhaseTiming{Phase: "bulk_index", Rows: indexed, Duration: time.Since(start)}
 	result.Timings = append(result.Timings, bulkTiming)
 	p.reportTimings([]PhaseTiming{bulkTiming})
-
-	// Validate against a count derived from Postgres rather than trusting the
-	// bulk responses. A silently dropped batch is the failure this catches.
-	expected, err := p.docs.CountProducts(ctx)
-	if err != nil {
-		return result, fmt.Errorf("count expected products: %w", err)
-	}
 
 	p.logf("\nopensearch: finalizing (restore replicas, refresh, force merge)\n")
 	start = time.Now()
@@ -205,6 +241,36 @@ func (p *Pipeline) Run(ctx context.Context, opts Options) (Result, error) {
 
 func (p *Pipeline) logf(format string, args ...any) {
 	fmt.Fprintf(p.out, format, args...)
+}
+
+// reportProgress estimates the remainder from the rate so far. Embedding cost
+// per document holds steady across the run, so the estimate stays honest
+// without tracking anything beyond elapsed time.
+func (p *Pipeline) reportProgress(done, total int64, elapsed time.Duration) {
+	if total <= 0 || done <= 0 {
+		return
+	}
+
+	percent := float64(done) / float64(total) * 100
+
+	// A batch that lands inside the clock's resolution divides by zero and
+	// prints "+Inf docs/sec", which reads as a bug in the ingest rather than a
+	// fast first batch. Reporting the count alone stays honest until there is
+	// enough elapsed time to derive a rate from.
+	if elapsed <= 0 {
+		p.logf("  indexed %7d / %d  (%3.0f%%)\n", done, total, percent)
+		return
+	}
+
+	rate := float64(done) / elapsed.Seconds()
+
+	remaining := time.Duration(float64(total-done)/rate) * time.Second
+	if done >= total {
+		remaining = 0
+	}
+
+	p.logf("  indexed %7d / %d  (%3.0f%%)  %6.0f docs/sec  about %s left\n",
+		done, total, percent, rate, remaining.Round(time.Second))
 }
 
 func (p *Pipeline) reportTimings(timings []PhaseTiming) {

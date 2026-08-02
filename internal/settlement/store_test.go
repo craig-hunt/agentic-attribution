@@ -3,9 +3,11 @@ package settlement
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -459,5 +461,66 @@ func TestBeginRejectsAnUnknownSearchRequest(t *testing.T) {
 
 	if err := store.Begin(context.Background(), p); err == nil {
 		t.Fatal("Begin accepted a settlement referencing a search request that does not exist")
+	}
+}
+
+// Slicing a detail by byte offset can split a multi-byte rune. Postgres
+// refuses invalid UTF-8 on a text column, the insert fails, and
+// RecordRejection logs and drops that error deliberately, so the refusal
+// disappears with nothing recording that it happened.
+func TestTruncateDetailCutsOnRuneBoundaries(t *testing.T) {
+	// Three-byte runes guarantee a boundary lands mid-rune at some offset, so
+	// the cut position has to move rather than take whatever byte it landed on.
+	for _, filler := range []string{"€", "日", "🙂"} {
+		count := maxRejectionDetail
+		detail := strings.Repeat(filler, count)
+
+		got := truncateDetail(detail)
+
+		if !utf8.ValidString(got) {
+			t.Errorf("truncating %q produced invalid UTF-8", filler)
+		}
+		if !strings.HasSuffix(got, "...") {
+			t.Errorf("truncating %q dropped the ellipsis: %q", filler, got)
+		}
+		if len(got) > maxRejectionDetail+len("...") {
+			t.Errorf("truncating %q returned %d bytes, over the cap", filler, len(got))
+		}
+	}
+}
+
+func TestTruncateDetailLeavesAShortDetailAlone(t *testing.T) {
+	const detail = "verify assertion: signature invalid for publisher pub_000001"
+
+	if got := truncateDetail(detail); got != detail {
+		t.Errorf("a short detail came back as %q", got)
+	}
+}
+
+// The unit test above proves the string stays valid. This proves Postgres
+// accepts it, which is the failure the truncation exists to avoid.
+func TestRecordRejectionStoresAnOversizedNonAsciiDetail(t *testing.T) {
+	store, _ := newStore(t)
+
+	detail := "facilitator refused: " + strings.Repeat("é", maxRejectionDetail)
+
+	if err := store.RecordRejection(context.Background(), Rejection{
+		PublisherID: testPublisherID,
+		AssertionID: "a_long_detail",
+		Reason:      "payment_invalid",
+		Detail:      detail,
+	}); err != nil {
+		t.Fatalf("RecordRejection refused a long non-ASCII detail: %v", err)
+	}
+
+	rows, err := store.RecentRejections(context.Background(), testPublisherID, 1)
+	if err != nil {
+		t.Fatalf("RecentRejections: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("the rejection did not persist")
+	}
+	if rows[0].Detail == nil || !utf8.ValidString(*rows[0].Detail) {
+		t.Errorf("the stored detail is not valid UTF-8: %+v", rows[0].Detail)
 	}
 }

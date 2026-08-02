@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,8 +88,12 @@ func Postgres(t *testing.T) *pgxpool.Pool {
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 
+	// rejected_attempts carries no foreign key, deliberately, so that an
+	// attempt naming a publisher who does not exist still gets recorded. That
+	// also means CASCADE never reaches it and it has to be named here, or its
+	// rows leak from one test into the next.
 	const q = `TRUNCATE ledger_entries, settlements, consumed_assertions, search_requests,
-	                    listings, products, publishers, merchants
+	                    rejected_attempts, listings, products, publishers, merchants
 	           RESTART IDENTITY CASCADE`
 
 	if _, execErr := pool.Exec(context.Background(), q); execErr != nil {
@@ -131,8 +136,17 @@ func databaseName() string {
 }
 
 func resolve() (string, error) {
+	// A supplied DSN gets the same per-package treatment as a started
+	// container. Skipping it here would leave every package sharing one
+	// database, racing to apply migrations and truncating each other's rows,
+	// which is exactly the failure the isolation exists to prevent.
 	if existing := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN")); existing != "" {
-		return existing, applySchema(existing)
+		owned, err := ownedDatabase(existing, databaseName())
+		if err != nil {
+			return "", err
+		}
+
+		return owned, applySchema(owned)
 	}
 
 	if _, lookErr := exec.LookPath("docker"); lookErr != nil {
@@ -170,6 +184,23 @@ func resolve() (string, error) {
 	owned := connectionString(database)
 
 	return owned, applySchema(owned)
+}
+
+// ownedDatabase creates a database of this package's own on whichever server
+// the supplied DSN names, then returns a DSN pointing at it.
+func ownedDatabase(admin, name string) (string, error) {
+	parsed, err := url.Parse(admin)
+	if err != nil {
+		return "", fmt.Errorf("parse TEST_POSTGRES_DSN: %w", err)
+	}
+
+	if createErr := createDatabase(admin, name); createErr != nil {
+		return "", createErr
+	}
+
+	parsed.Path = "/" + name
+
+	return parsed.String(), nil
 }
 
 func connectionString(database string) string {
@@ -280,6 +311,19 @@ func applySchema(target string) error {
 		return fmt.Errorf("connect for schema load: %w", poolErr)
 	}
 	defer pool.Close()
+
+	// Two packages reaching a fresh database at once would both try to create
+	// the same types and both fail on the catalogue's unique index. An advisory
+	// lock serialises the schema load without serialising the tests
+	// themselves, which keep their own databases and never contend.
+	const schemaLockKey = 0x61_67_65_6e_74_69_63
+
+	if _, lockErr := pool.Exec(ctx, "SELECT pg_advisory_lock($1)", schemaLockKey); lockErr != nil {
+		return fmt.Errorf("acquire schema lock: %w", lockErr)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", schemaLockKey)
+	}()
 
 	if _, execErr := pool.Exec(ctx, migrationsTable); execErr != nil {
 		return fmt.Errorf("create schema_migrations: %w", execErr)

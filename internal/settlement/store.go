@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -210,4 +211,70 @@ func (s *Store) Fail(ctx context.Context, settlementID string) error {
 	}
 
 	return nil
+}
+
+// Rejection describes a settlement the platform refused. Recording these makes
+// attribution integrity observable: the verification paths already reject
+// tampered signatures, expired assertions, and replays, and until now a log
+// line was the only evidence any of it happened.
+type Rejection struct {
+	PublisherID string
+	AssertionID string
+	MerchantID  string
+	Reason      string
+	Detail      string
+}
+
+// RecordRejection writes a refused attempt. It deliberately returns no error to
+// its caller's control flow: the caller has already decided to reject, and
+// failing to journal that decision must not turn a clean rejection into a 500.
+// The error comes back so the caller can log it and carry on.
+func (s *Store) RecordRejection(ctx context.Context, r Rejection) error {
+	const q = `
+		INSERT INTO rejected_attempts
+			(publisher_id, assertion_id, merchant_id, reason, detail)
+		VALUES ($1, $2, $3, $4, $5)`
+
+	// The detail carries an upstream error string, which grows without bound
+	// when a dependency decides to be descriptive. Truncated so one verbose
+	// failure cannot bloat a table the dashboard reads on every refresh.
+	if _, err := s.pool.Exec(ctx, q,
+		r.PublisherID, nullable(r.AssertionID), nullable(r.MerchantID),
+		r.Reason, nullable(truncateDetail(r.Detail)),
+	); err != nil {
+		return fmt.Errorf("record rejection: %w", err)
+	}
+
+	return nil
+}
+
+const maxRejectionDetail = 500
+
+// truncateDetail cuts on a rune boundary rather than a byte offset. Slicing
+// mid-rune yields invalid UTF-8, Postgres refuses it on a text column, and the
+// insert fails. RecordRejection logs and drops that error deliberately, so a
+// merchant name or an upstream message carrying non-ASCII would make the
+// refusal vanish without a trace, which is the one outcome this table exists
+// to prevent.
+func truncateDetail(s string) string {
+	if len(s) <= maxRejectionDetail {
+		return s
+	}
+
+	cut := maxRejectionDetail
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+
+	return s[:cut] + "..."
+}
+
+// nullable keeps an absent identifier out of the column as NULL rather than as
+// an empty string, so counting distinct assertions means what it reads as.
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+
+	return &s
 }

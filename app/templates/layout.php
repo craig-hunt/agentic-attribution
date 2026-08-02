@@ -40,10 +40,38 @@ use function Agentic\Dashboard\e;
   .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; background:#dcfce7; color:var(--good); }
   .pill.other { background:#fee2e2; color:#b91c1c; }
   .err { background:#fff; border:1px solid var(--line); border-left:3px solid #b91c1c; padding:16px; }
+  .controls { background:#fff; border:1px solid var(--line); padding:14px 16px; margin-bottom:18px;
+              display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
+  .controls button { font:inherit; padding:7px 16px; border:1px solid var(--line); background:#fff;
+                     cursor:pointer; border-radius:3px; }
+  .controls button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .controls button[disabled] { opacity:.45; cursor:default; }
+  .controls label { font-size:13px; color:var(--muted); display:flex; gap:7px; align-items:center; }
+  .controls input[type=number] { font:inherit; width:64px; padding:5px 7px; border:1px solid var(--line); }
+  .live { font-size:13px; color:var(--muted); margin-left:auto; font-variant-numeric:tabular-nums;
+          display:flex; gap:6px; align-items:center; }
+  .live b { color:var(--fg); font-weight:600; }
+  .chip { font:inherit; font-size:13px; color:var(--muted); background:transparent;
+          border:1px solid var(--line); border-radius:12px; padding:3px 10px; cursor:pointer; }
+  .chip:hover { border-color:var(--accent); color:var(--fg); }
+  .chip.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .chip.on b { color:#fff; }
+  th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sortable:hover { color:var(--accent); }
+  th.sortable::after { content:"\2195"; opacity:.28; margin-left:5px; font-size:11px; }
+  th.sortable.asc::after { content:"\2191"; opacity:1; }
+  th.sortable.desc::after { content:"\2193"; opacity:1; }
+  .blocked { color:#b91c1c; font-variant-numeric:tabular-nums; }
+  .event { font-size:12px; color:var(--muted); margin-top:10px; min-height:1.2em;
+           font-family:"Cascadia Mono",Consolas,monospace; }
+  /* Rows the poll just changed flash once, so a viewer sees which publisher
+     transacted rather than hunting for the number that moved. */
+  @keyframes settled { from { background:#dcfce7; } to { background:transparent; } }
+  tr.changed td { animation:settled 1.1s ease-out; }
 </style>
 </head>
 <body>
-<header><a href="/">agentic-attribution</a> <span style="color:var(--muted);font-weight:400">publisher dashboard</span></header>
-<main><?= $content ?></main>
+<header data-testid="site-header"><a data-testid="home-link" href="/">agentic-attribution</a> <span style="color:var(--muted);font-weight:400">publisher dashboard</span></header>
+<main data-testid="page-content"><?= $content ?></main>
 </body>
 </html>

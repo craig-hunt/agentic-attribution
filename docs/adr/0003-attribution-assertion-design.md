@@ -40,7 +40,7 @@ Three properties matter for any answer:
 
 **Signature scheme: Ed25519.** The platform signs with a private key; merchants and facilitators verify with a widely published public key. Verification requires no contact with the issuing platform.
 
-**Single use.** The `assertion_id` is consumed at settlement and recorded in Postgres. A replayed assertion fails verification.
+**Single use.** Settlement consumes the `assertion_id` and records it in Postgres. A replayed assertion fails verification.
 
 **One-hour expiry.** Assertions represent a recent purchase decision, not a durable entitlement.
 
@@ -61,24 +61,24 @@ Three properties matter for any answer:
 
 **Negative.**
 
-- Replay protection requires state. The consumed-assertion record must be durable and checked on every settlement, which reintroduces a database dependency in the settlement path specifically. Acceptable there, since settlement already writes to the ledger.
-- One-hour expiry may reject legitimate slow decisions. An agent that researches for ninety minutes before purchasing loses attribution. The window is a tunable policy rather than a protocol constraint, and the right value depends on observed agent behavior.
+- Replay protection requires state. The consumed-assertion record must stay durable and get checked on every settlement, which reintroduces a database dependency in the settlement path specifically. Acceptable there, since settlement already writes to the ledger.
+- One-hour expiry may reject legitimate slow decisions. An agent that researches for ninety minutes before purchasing loses attribution. The window remains a tunable policy rather than a protocol constraint, and the right value depends on observed agent behavior.
 - Key rotation requires care. Merchants cache the public key, so rotation needs an overlap period during which both keys verify.
 - A compromised signing key allows arbitrary assertion forgery until rotation completes. Key custody becomes a first-class security concern.
 
 **Neutral.**
 
 - Assertion size grows the payment payload modestly. Immaterial at these dimensions.
-- The scheme assumes merchants cooperate by honoring assertions. That cooperation is a commercial arrangement, not a technical guarantee, and no cryptographic design changes it.
+- The scheme assumes merchants cooperate by honoring assertions. That cooperation rests on a commercial arrangement rather than a technical guarantee, and no cryptographic design changes it.
 
 ## Alternatives considered
 
-**JWT with RS256 or ES256.** Standard, widely tooled, and every language has a library. Rejected on two grounds. First, size: a JWT carrying equivalent claims runs several times larger than the compact assertion, and payload size matters inside a payment envelope. Second, the JWT ecosystem carries a long history of algorithm-confusion vulnerabilities, where a verifier accepts `alg: none` or a symmetric algorithm where an asymmetric one was intended. A fixed-scheme assertion with no algorithm negotiation removes that category entirely.
+**JWT with RS256 or ES256.** Standard, widely tooled, and every language ships a library. Rejected on two grounds. First, size: a JWT carrying equivalent claims runs several times larger than the compact assertion, and payload size matters inside a payment envelope. Second, the JWT ecosystem carries a long history of algorithm-confusion vulnerabilities, where a verifier accepts `alg: none` or a symmetric algorithm in place of the asymmetric one the designer intended. A fixed-scheme assertion with no algorithm negotiation removes that category entirely.
 
 **HMAC with a shared secret.** Simplest to implement and fastest to verify. Rejected because it requires a shared secret between the platform and every merchant. That does not scale to twenty thousand merchants, secret distribution becomes an operational burden, and any merchant holding the secret can forge assertions for any publisher.
 
-**Unsigned attribution claims, trusted from the agent.** Trivial to implement. Rejected immediately. An unsigned claim is an invitation to commission fraud, and the incentive to forge is exactly proportional to the commission at stake.
+**Unsigned attribution claims, trusted from the agent.** Trivial to implement. Rejected immediately. An unsigned claim invites commission fraud, and the incentive to forge scales exactly with the commission at stake.
 
-**On-chain attribution registry.** Write attribution records to a smart contract, verify at settlement. Genuinely trustless and auditable by anyone. Rejected on cost and latency. A registry write per search result makes search economically impossible, and a read per settlement adds chain-query latency to the payment path. Worth revisiting for high-value transactions where per-transaction cost amortizes, which is a different product than this one.
+**On-chain attribution registry.** Write attribution records to a smart contract, verify at settlement. Genuinely trustless and auditable by anyone. Rejected on cost and latency. A registry write per search result makes search economically impossible, and a read per settlement adds chain-query latency to the payment path. Worth revisiting for high-value transactions where per-transaction cost amortizes, which describes a different product than this one.
 
-**Merchant-side attribution lookup by callback.** The merchant calls the platform at settlement to ask who deserves credit. Simple and requires no cryptography. Rejected because it recreates exactly the coupling agent-mediated commerce eliminates, puts platform availability directly in the merchant's settlement path, and fails when the platform is unreachable.
+**Merchant-side attribution lookup by callback.** The merchant calls the platform at settlement to ask who deserves credit. Simple and requires no cryptography. Rejected because it recreates exactly the coupling agent-mediated commerce eliminates, puts platform availability directly in the merchant's settlement path, and fails the moment the platform stops answering.

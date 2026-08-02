@@ -1,4 +1,4 @@
-# ADR-0001: Language Selection Per Layer — TypeScript at the Edge, PHP for Application, Go for Data
+# ADR-0001: Language Selection Per Layer, TypeScript at the Edge, PHP for Application, Go for Data
 
 **Status:** Accepted
 **Date:** 2026-08-02
@@ -30,7 +30,7 @@ A further consideration shaped this specifically: the organization this demo tar
 | **Client / simulation** | **TypeScript** | Agent simulator driving the full purchase loop |
 | **Data** | **Go** | search, attribution, settlement, ingest services, dataset generator |
 
-**TypeScript rather than plain JavaScript, without exception.** The x402 protocol carries structured payloads (`PaymentRequirements`, `PaymentPayload`, `PaymentResponse`) alongside the attribution assertion envelope. These structures nest, carry optional fields that vary by scheme and network, and get constructed in one place then verified in another. Static types catch the class of error that would otherwise surface as a failed settlement, which is the most expensive place to discover a mistake.
+**TypeScript rather than plain JavaScript, without exception.** The x402 protocol carries structured payloads (`PaymentRequirements`, `PaymentPayload`, `PaymentResponse`) alongside the attribution assertion envelope. These structures nest, carry optional fields that vary by scheme and network, and get constructed in one place then verified in another. Static types catch the class of error that would otherwise surface as a failed settlement, the most expensive place to discover a mistake.
 
 The application layer reads through the data services over HTTP rather than querying datastores directly. That keeps the data contract in one place and prevents the application layer from accumulating query logic that belongs elsewhere.
 
@@ -50,7 +50,7 @@ The application layer reads through the data services over HTTP rather than quer
 
 - Three toolchains, three dependency managers, three testing conventions. Operational surface grows meaningfully.
 - Contributors need context across languages to change behavior end to end.
-- Shared types exist in three places. The assertion structure appears in TypeScript, Go, and PHP, and drift between them is a real failure mode. Generating from a single schema mitigates this but does not remove the discipline required.
+- Shared types exist in three places. The assertion structure appears in TypeScript, Go, and PHP, and drift between them presents a real failure mode. Generating from a single schema mitigates that without removing the discipline it demands.
 - CI runs three build pipelines and three mutation-testing passes.
 
 **Neutral.**
@@ -66,8 +66,8 @@ The application layer reads through the data services over HTTP rather than quer
 
 **Everything in Go.** Templating, form handling, and dashboard iteration all move slower in Go than in PHP. Go also cannot run in a Cloudflare Worker without WASM compilation that adds complexity for no benefit at this layer. Rejected on both counts.
 
-**Plain JavaScript at the edge rather than TypeScript.** Removes a build step and a toolchain dependency. Rejected because the x402 payload structures are exactly the case static typing exists for: nested, scheme-dependent, constructed in one place and validated in another, with failures surfacing late and expensively. The build-step cost is trivial against that.
+**Plain JavaScript at the edge rather than TypeScript.** Removes a build step and a toolchain dependency. Rejected because the x402 payload structures describe exactly the case static typing exists for: nested, scheme-dependent, constructed in one place and validated in another, with failures surfacing late and expensively. The build-step cost weighs trivially against that.
 
 **Rust for the data layer.** Faster than Go on the hot path with stronger memory guarantees. Rejected on delivery timeline and handoff cost. The performance delta over Go does not change whether this system meets a sub-100ms budget, and Rust would slow both the initial build and any handoff to a team without Rust depth.
 
-**Python for the data layer.** Strongest ecosystem for embedding generation and ML tooling. Rejected for the serving path on latency and concurrency grounds. Worth revisiting for the offline embedding pipeline specifically, where the ecosystem advantage is real and latency does not matter.
+**Python for the data layer.** Strongest ecosystem for embedding generation and ML tooling. Rejected for the serving path on latency and concurrency grounds. Worth revisiting for the offline embedding pipeline specifically, where the ecosystem advantage holds and latency does not matter.

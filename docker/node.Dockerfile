@@ -22,4 +22,19 @@ COPY simulator ./simulator
 
 RUN npm run build --workspace @agentic-attribution/types
 
+# Stryker needs the Go-minted fixture and the migration files the tests read by
+# relative path, so the test stage carries them.
+FROM node:22-alpine AS test
+
+WORKDIR /app
+COPY --from=0 /app ./
+COPY db ./db
+
+CMD ["npm", "test", "--workspaces", "--if-present"]
+
+FROM node:22-alpine AS runtime
+
+WORKDIR /app
+COPY --from=0 /app ./
+
 USER node

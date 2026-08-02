@@ -1,0 +1,224 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+  BASE_SEPOLIA,
+  EIP3009_PRIMARY_TYPE,
+  EIP3009_TYPES,
+  eip712Domain,
+  toTypedMessage,
+} from '@agentic-attribution/types';
+import { privateKeyToAccount } from 'viem/accounts';
+
+import {
+  NonceLedger,
+  ROUTE,
+  handle,
+  nowSeconds,
+  type FacilitatorRequest,
+  type SettlementRecord,
+} from './handler.js';
+import type { WireAuthorization } from './verify.js';
+
+const account = privateKeyToAccount(
+  '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+);
+
+const NETWORK = 'base-sepolia';
+const PAY_TO = '0x1111111111111111111111111111111111111111';
+const VALUE = '129990000';
+const NOW_MS = 1_800_000_000_000;
+
+const clock = () => NOW_MS;
+
+function authorization(overrides: Partial<WireAuthorization> = {}): WireAuthorization {
+  const seconds = BigInt(Math.floor(NOW_MS / 1000));
+
+  return {
+    from: account.address,
+    to: PAY_TO,
+    value: VALUE,
+    validAfter: String(seconds - 60n),
+    validBefore: String(seconds + 600n),
+    nonce: `0x${'ab'.repeat(32)}`,
+    ...overrides,
+  };
+}
+
+async function request(auth: WireAuthorization = authorization()): Promise<FacilitatorRequest> {
+  const signature = await account.signTypedData({
+    domain: eip712Domain(NETWORK),
+    types: EIP3009_TYPES,
+    primaryType: EIP3009_PRIMARY_TYPE,
+    message: toTypedMessage(auth),
+  });
+
+  return {
+    x402Version: 1,
+    paymentPayload: {
+      x402Version: 1,
+      scheme: 'exact',
+      network: NETWORK,
+      authorization: auth,
+      signature,
+    },
+    // The requirements stay at the merchant's stated terms rather than
+    // echoing the authorization. Deriving them from the payload would make
+    // every mismatch test agree with itself and pass for the wrong reason.
+    paymentRequirements: {
+      scheme: 'exact',
+      network: NETWORK,
+      asset: BASE_SEPOLIA.usdcAddress,
+      maxAmountRequired: VALUE,
+      payTo: PAY_TO,
+      maxTimeoutSeconds: 120,
+      resource: '/purchase/prd_1',
+      description: 'Test Listing',
+    },
+  };
+}
+
+function options(nonces = new NonceLedger(), settled: SettlementRecord[] = []) {
+  return { nonces, clock, onSettled: (record: SettlementRecord) => settled.push(record) };
+}
+
+test('health answers without touching verification', async () => {
+  const response = await handle('GET', ROUTE.Health, null, options());
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { status: 'ok', mode: 'mock' });
+});
+
+test('unknown routes and methods are refused', async () => {
+  const cases: Array<[string, string]> = [
+    ['GET', ROUTE.Verify],
+    ['GET', ROUTE.Settle],
+    ['POST', ROUTE.Health],
+    ['POST', '/nope'],
+    ['DELETE', ROUTE.Settle],
+  ];
+
+  for (const [method, path] of cases) {
+    const response = await handle(method, path, null, options());
+
+    assert.equal(response.status, 404, `${method} ${path} should be refused`);
+  }
+});
+
+test('a malformed body is refused before verification', async () => {
+  const response = await handle('POST', ROUTE.Settle, null, options());
+
+  assert.equal(response.status, 400);
+});
+
+test('verify reports validity without settling anything', async () => {
+  const nonces = new NonceLedger();
+  const settled: SettlementRecord[] = [];
+
+  const response = await handle('POST', ROUTE.Verify, await request(), options(nonces, settled));
+
+  assert.equal(response.status, 200);
+  assert.equal((response.body as { isValid: boolean }).isValid, true);
+
+  // Verify moves no value, so it must not consume the nonce. Consuming it here
+  // would make a caller's pre-flight check burn the payment it was checking.
+  assert.equal(nonces.size, 0);
+  assert.equal(settled.length, 0);
+});
+
+test('settle confirms and records the transfer', async () => {
+  const nonces = new NonceLedger();
+  const settled: SettlementRecord[] = [];
+
+  const response = await handle('POST', ROUTE.Settle, await request(), options(nonces, settled));
+
+  assert.equal(response.status, 200);
+
+  const body = response.body as { success: boolean; transaction: string; payer: string };
+  assert.equal(body.success, true);
+  assert.match(body.transaction, /^0x[0-9a-f]{64}$/);
+  assert.equal(body.payer?.toLowerCase(), account.address.toLowerCase());
+
+  assert.equal(nonces.size, 1);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0]?.value, VALUE);
+});
+
+// The token contract records each nonce and refuses a repeat, so a replayed
+// authorization fails rather than transferring twice. A mock that let it
+// through would remove one of the demo's two replay defenses.
+test('a replayed nonce is refused on the second settle', async () => {
+  const nonces = new NonceLedger();
+  const payload = await request();
+
+  const first = await handle('POST', ROUTE.Settle, payload, options(nonces));
+  assert.equal((first.body as { success: boolean }).success, true);
+
+  const second = await handle('POST', ROUTE.Settle, payload, options(nonces));
+  const body = second.body as { success: boolean; errorReason: string };
+
+  assert.equal(second.status, 200);
+  assert.equal(body.success, false);
+  assert.equal(body.errorReason, 'nonce_already_used');
+  assert.equal(nonces.size, 1, 'the replay must not record a second nonce');
+});
+
+// A rejected payment is a 200 carrying success:false, matching the real
+// facilitator. A non-200 means the facilitator itself failed, and settlement
+// treats those two very differently.
+test('a rejected payment answers 200 with success false', async () => {
+  const underpaying = await request(authorization({ value: '1' }));
+
+  const response = await handle('POST', ROUTE.Settle, underpaying, options());
+  const body = response.body as { success: boolean; errorReason: string };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, false);
+  assert.equal(body.errorReason, 'insufficient_amount');
+});
+
+test('a rejected payment consumes no nonce', async () => {
+  const nonces = new NonceLedger();
+  const misdirected = await request(
+    authorization({ to: '0x9999999999999999999999999999999999999999' }),
+  );
+
+  await handle('POST', ROUTE.Settle, misdirected, options(nonces));
+
+  // Burning the nonce on a rejection would make a corrected retry impossible.
+  assert.equal(nonces.size, 0);
+});
+
+test('verify surfaces the specific invalid reason', async () => {
+  const expired = await request(
+    authorization({ validBefore: String(BigInt(Math.floor(NOW_MS / 1000)) - 1n) }),
+  );
+
+  const response = await handle('POST', ROUTE.Verify, expired, options());
+  const body = response.body as { isValid: boolean; invalidReason: string };
+
+  assert.equal(body.isValid, false);
+  assert.equal(body.invalidReason, 'authorization_expired');
+});
+
+test('the nonce ledger claims once and reports membership', () => {
+  const ledger = new NonceLedger();
+
+  assert.equal(ledger.has('0xabc'), false);
+  assert.equal(ledger.claim('0xabc'), true);
+  assert.equal(ledger.has('0xabc'), true);
+  assert.equal(ledger.claim('0xabc'), false);
+  assert.equal(ledger.size, 1);
+
+  assert.equal(ledger.claim('0xdef'), true);
+  assert.equal(ledger.size, 2);
+});
+
+// Seconds rather than milliseconds. EIP-3009 validity windows are Unix
+// seconds, and passing milliseconds would put every authorization roughly
+// fifty thousand years in the future.
+test('the clock converts milliseconds to seconds', () => {
+  assert.equal(nowSeconds(() => 1_800_000_000_000), 1_800_000_000n);
+  assert.equal(nowSeconds(() => 1_800_000_000_999), 1_800_000_000n);
+  assert.equal(nowSeconds(() => 0), 0n);
+});

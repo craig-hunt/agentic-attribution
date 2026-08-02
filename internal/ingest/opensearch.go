@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,14 +24,26 @@ const (
 	SearchPipeline    = "hybrid-search"
 
 	// Batch size trades round trips against request size and heap pressure.
-	// 500 documents with embeddings lands near 5-10MB per request, inside the
-	// range OpenSearch handles without GC spikes.
-	BulkBatchSize = 500
+	// The neural pipeline generates every embedding inside the cluster and the
+	// Lucene k-NN engine builds its graphs on heap, so a batch costs far more
+	// than its wire size suggests. 200 documents keeps a single-node demo
+	// clear of the ML circuit breaker; larger batches trip it on a laptop.
+	BulkBatchSize = 200
+
+	// A bulk load that cannot absorb backpressure fails on the machine with
+	// the least memory rather than slowing down on it. Documents carry
+	// product_id as _id, so replaying a whole batch overwrites rather than
+	// duplicates, which makes retrying the simple thing to do.
+	bulkMaxAttempts = 6
 
 	// Target replica count restored after load completes. Zero during load
 	// because replicas duplicate every indexing operation.
 	TargetReplicas = 1
 )
+
+// A variable rather than a constant so the tests exercise the backoff without
+// spending fifteen seconds doing it.
+var bulkRetryBaseDelay = 500 * time.Millisecond
 
 type OpenSearchClient struct {
 	baseURL string
@@ -103,6 +116,14 @@ func (c *OpenSearchClient) EnableLocalModels(ctx context.Context) error {
 			"plugins.ml_commons.model_access_control_enabled":    false,
 			"plugins.ml_commons.native_memory_threshold":         99,
 			"plugins.ml_commons.allow_registering_model_via_url": true,
+
+			// The 85% default assumes inference shares a heap with ordinary
+			// search traffic, where sustained pressure signals trouble. A
+			// dedicated bulk load runs the heap hot by design, and the Lucene
+			// k-NN engine builds its graphs there, so the default breaker
+			// opens during normal seeding and rejects documents with a 429.
+			// BulkIndex retries those, and this keeps the retries rare.
+			"plugins.ml_commons.jvm_heap_memory_threshold": 92,
 		},
 	}
 
@@ -141,8 +162,21 @@ func (c *OpenSearchClient) RegisterEmbeddingModel(ctx context.Context) (string, 
 		return "", fmt.Errorf("await registration: %w", err)
 	}
 
-	if _, err := c.do(ctx, http.MethodPost, "/_plugins/_ml/models/"+modelID+"/_deploy", nil); err != nil {
+	raw, err = c.do(ctx, http.MethodPost, "/_plugins/_ml/models/"+modelID+"/_deploy", nil)
+	if err != nil {
 		return "", fmt.Errorf("deploy model: %w", err)
+	}
+
+	// Deployment is asynchronous. Loading the model into the nodes' memory
+	// takes longer than the HTTP call, and the neural ingest pipeline rejects
+	// documents until the model reports DEPLOYED.
+	var deploy taskResponse
+	if err := json.Unmarshal(raw, &deploy); err != nil {
+		return "", fmt.Errorf("decode deploy response: %w", err)
+	}
+
+	if _, err := c.awaitTask(ctx, deploy.TaskID); err != nil {
+		return "", fmt.Errorf("await deployment: %w", err)
 	}
 
 	return modelID, nil
@@ -187,6 +221,100 @@ func (c *OpenSearchClient) awaitTask(ctx context.Context, taskID string) (string
 	return "", fmt.Errorf("task %s did not complete within %s", taskID, maxWait)
 }
 
+// DeployedModelID finds a model already deployed in the cluster, which is what
+// a reload needs when it skips registration. The search service resolves the
+// model the same way, so both sides discover it rather than configuring it.
+func (c *OpenSearchClient) DeployedModelID(ctx context.Context) (string, error) {
+	query := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"model_state": "DEPLOYED"},
+		},
+		"size": 1,
+	}
+
+	raw, err := c.do(ctx, http.MethodPost, "/_plugins/_ml/models/_search", query)
+	if err != nil {
+		return "", fmt.Errorf("search deployed models: %w", err)
+	}
+
+	var found struct {
+		Hits struct {
+			Hits []struct {
+				ID string `json:"_id"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(raw, &found); err != nil {
+		return "", fmt.Errorf("decode model search: %w", err)
+	}
+
+	if len(found.Hits.Hits) == 0 {
+		return "", fmt.Errorf("no deployed embedding model; run without --skip-model first")
+	}
+
+	return found.Hits.Hits[0].ID, nil
+}
+
+// Embed runs the deployed model over a batch of texts and returns one vector
+// per input, in order.
+//
+// The ingest run calls this explicitly rather than declaring a text_embedding
+// ingest processor as the index default. That processor rebuilds the document
+// it processes, and the rebuild drops every field of every object inside an
+// array: a product arrives carrying seven offer fields and reaches the index
+// carrying one. It reports no error while doing it, so the corruption surfaces
+// later as an agent finding no purchasable offer. Generating the vector here
+// keeps the model in-cluster, which is the property that matters, and leaves
+// the document exactly as assembled. See ADR-0009.
+func (c *OpenSearchClient) Embed(ctx context.Context, modelID string, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	request := map[string]any{
+		"text_docs":       texts,
+		"return_number":   true,
+		"target_response": []string{"sentence_embedding"},
+	}
+
+	raw, err := c.do(ctx, http.MethodPost, "/_plugins/_ml/_predict/text_embedding/"+modelID, request)
+	if err != nil {
+		return nil, fmt.Errorf("predict embeddings: %w", err)
+	}
+
+	var response struct {
+		Results []struct {
+			Output []struct {
+				Data []float32 `json:"data"`
+			} `json:"output"`
+		} `json:"inference_results"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode predictions: %w", err)
+	}
+
+	// A short response would silently pair vectors with the wrong documents,
+	// which produces a searchable index full of plausible nonsense.
+	if len(response.Results) != len(texts) {
+		return nil, fmt.Errorf("model returned %d vectors for %d documents",
+			len(response.Results), len(texts))
+	}
+
+	vectors := make([][]float32, len(texts))
+	for i, result := range response.Results {
+		if len(result.Output) == 0 {
+			return nil, fmt.Errorf("document %d came back without an embedding", i)
+		}
+		if got := len(result.Output[0].Data); got != EmbeddingDimensions {
+			return nil, fmt.Errorf("document %d embedded to %d dimensions, mapping expects %d",
+				i, got, EmbeddingDimensions)
+		}
+		vectors[i] = result.Output[0].Data
+	}
+
+	return vectors, nil
+}
+
 // CreateEmbeddingPipeline installs the ingest pipeline that generates vectors
 // inline during bulk indexing.
 func (c *OpenSearchClient) CreateEmbeddingPipeline(ctx context.Context, modelID, template string) error {
@@ -204,7 +332,7 @@ func (c *OpenSearchClient) CreateSearchPipeline(ctx context.Context, definition 
 }
 
 // CreateVersionedIndex builds a fresh index with the bulk-load settings
-// already applied and the embedding pipeline as its default.
+// already applied.
 func (c *OpenSearchClient) CreateVersionedIndex(ctx context.Context, name, mapping string) error {
 	var body map[string]any
 	if err := json.Unmarshal([]byte(mapping), &body); err != nil {
@@ -215,12 +343,13 @@ func (c *OpenSearchClient) CreateVersionedIndex(ctx context.Context, name, mappi
 	if !ok {
 		return fmt.Errorf("mapping lacks a settings object")
 	}
-	index, ok := settings["index"].(map[string]any)
-	if !ok {
+	if _, ok := settings["index"].(map[string]any); !ok {
 		return fmt.Errorf("settings lacks an index object")
 	}
 
-	index["default_pipeline"] = EmbeddingPipeline
+	// No default_pipeline. The ingest run embeds each batch explicitly, because
+	// the text_embedding processor silently strips the fields of every object
+	// inside an array. See ADR-0009.
 
 	if _, err := c.do(ctx, http.MethodDelete, "/"+name, nil); err != nil {
 		// A missing index is the expected case on a first run.
@@ -266,8 +395,41 @@ func (c *OpenSearchClient) BulkIndex(ctx context.Context, index string, docs []P
 		buf.WriteByte('\n')
 	}
 
-	raw, err := c.do(ctx, http.MethodPost, "/_bulk", buf.Bytes())
+	body := buf.Bytes()
+	delay := bulkRetryBaseDelay
+
+	for attempt := 1; ; attempt++ {
+		err := c.bulkAttempt(ctx, body)
+		if err == nil {
+			return nil
+		}
+
+		// A rejection under pressure describes a cluster asking for less at
+		// once, not a bad request. Retrying it is the whole point.
+		if !errors.Is(err, errBulkRejected) || attempt == bulkMaxAttempts {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+}
+
+// errBulkRejected marks the failures worth retrying: a cluster shedding load
+// rather than refusing the request. Everything else fails the load immediately,
+// because retrying a malformed document produces the same result six times.
+var errBulkRejected = errors.New("bulk rejected under pressure")
+
+func (c *OpenSearchClient) bulkAttempt(ctx context.Context, body []byte) error {
+	raw, err := c.do(ctx, http.MethodPost, "/_bulk", body)
 	if err != nil {
+		if strings.Contains(err.Error(), "returned 429") {
+			return fmt.Errorf("%w: %s", errBulkRejected, err)
+		}
 		return err
 	}
 
@@ -281,6 +443,10 @@ func (c *OpenSearchClient) BulkIndex(ctx context.Context, index string, docs []P
 	}
 
 	for i, item := range result.Items {
+		if item.Index.Status == http.StatusTooManyRequests {
+			return fmt.Errorf("%w: item %d: %s",
+				errBulkRejected, i, truncate(item.Index.Error, 256))
+		}
 		if item.Index.Status >= 300 {
 			return fmt.Errorf("bulk item %d failed with %d: %s",
 				i, item.Index.Status, truncate(item.Index.Error, 256))

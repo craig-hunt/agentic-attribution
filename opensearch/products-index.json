@@ -62,7 +62,7 @@
         "type": "keyword"
       },
       "attributes": {
-        "type": "flattened"
+        "type": "flat_object"
       },
       "embedding": {
         "type": "knn_vector",
@@ -70,7 +70,7 @@
         "method": {
           "name": "hnsw",
           "space_type": "cosinesimil",
-          "engine": "faiss",
+          "engine": "lucene",
           "parameters": {
             "ef_construction": 256,
             "m": 16

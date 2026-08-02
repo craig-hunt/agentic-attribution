@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "command",
+  "commandRunner": { "command": "npx tsx --test src/*.test.ts" },
+  "mutate": ["src/**/*.ts", "!src/**/*.test.ts"],
+  "coverageAnalysis": "off",
+  "reporters": ["clear-text", "progress"],
+  "timeoutMS": 30000,
+  "concurrency": 4,
+  "thresholds": { "high": 85, "low": 70, "break": 70 },
+  "tempDirName": "../../.stryker-tmp/types",
+  "cleanTempDir": true
+}
