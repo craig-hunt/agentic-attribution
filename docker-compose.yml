@@ -58,8 +58,16 @@ services:
     ulimits:
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
+    # Published for inspection only. Every service reaches OpenSearch at
+    # http://opensearch:9200 on the compose network, and the healthcheck runs
+    # inside the container, so nothing in the stack depends on this mapping.
+    #
+    # Overridable because Windows reserves TCP ranges for Hyper-V dynamically,
+    # and a reservation covering 9200 fails the bind with a 500 from Docker's
+    # port forwarder before OpenSearch ever starts. Set OPENSEARCH_HOST_PORT to
+    # anything free and carry on.
     ports:
-      - "9200:9200"
+      - "${OPENSEARCH_HOST_PORT:-9200}:9200"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     healthcheck:

@@ -182,8 +182,22 @@ rather than a property.
 | settlement-svc | http://localhost:8082 |
 | Merchant | http://localhost:8090 |
 | Facilitator (mock) | http://localhost:8095 |
-| OpenSearch | http://localhost:9200 |
+| OpenSearch | http://localhost:9200, or `$OPENSEARCH_HOST_PORT` when set |
 | Postgres | localhost:5432, `agentic` / `agentic` |
+
+**If `make up` fails on port 9200** with `/forwards/expose returned unexpected
+status: 500`, Windows has reserved a TCP range covering it for Hyper-V. Confirm
+with `netsh interface ipv4 show excludedportrange protocol=tcp` in PowerShell,
+then either release the reservations with `net stop winnat && net start winnat`
+as administrator, or publish somewhere else and carry on:
+
+```bash
+OPENSEARCH_HOST_PORT=19200 make e2e-cold
+```
+
+Nothing in the stack reads that mapping. Services reach OpenSearch over the
+compose network, so moving the host port costs you nothing beyond the URL you
+type when inspecting it.
 
 ---
 
