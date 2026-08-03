@@ -100,10 +100,10 @@ The merchant verifies an assertion before forwarding anything, so a tampered or
 expired one never reaches settlement. The two layers name the same refusal
 differently:
 
-| Layer | Signature failure | Expiry failure |
-|---|---|---|
-| `packages/types/verify.ts` | `invalid_signature` | `expired` |
-| `internal/settlement` | `assertion_signature_invalid` | `assertion_expired` |
+| Layer                      | Signature failure             | Expiry failure      |
+| -------------------------- | ----------------------------- | ------------------- |
+| `packages/types/verify.ts` | `invalid_signature`           | `expired`           |
+| `internal/settlement`      | `assertion_signature_invalid` | `assertion_expired` |
 
 `constants/testData.ts` names both sets separately, so a spec asserts the layer
 it actually reached and the split stays visible rather than accidental.

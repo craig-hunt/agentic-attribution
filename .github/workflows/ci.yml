@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The compose file interpolates the signing keypair, and every service
       # that verifies an assertion needs the public half. Generated per run:
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # OpenSearch refuses to start without it, and the runner default is far
       # below what a single node needs.
@@ -68,13 +68,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Raise vm.max_map_count
         run: sudo sysctl -w vm.max_map_count=262144
 
       - name: Generate a signing keypair
         run: make keys ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Use the Node the manifests require
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: cypress-tests/package-lock.json
 
       # Lint, formatting, and types need no browser, so they fail fast before
       # anything spends minutes seeding a catalog.
@@ -87,7 +94,7 @@ jobs:
 
       - name: Screenshots from failed specs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: cypress-screenshots
           path: cypress-tests/cypress/screenshots
