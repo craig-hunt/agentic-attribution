@@ -10,6 +10,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Dependency advisories, on the code that actually ships.
+  #
+  # The npm audits run --omit=dev deliberately. A test runner's transitive
+  # advisory cannot be reached by anyone, and gating on it trains a team to
+  # pass --force at the first red build, which is how a real finding gets
+  # waved through. govulncheck needs no such filter: it reports only
+  # vulnerabilities the code demonstrably calls.
+  advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use the Node the manifests require
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Audit shipped npm dependencies
+        run: npm audit --omit=dev
+
+      - name: Audit the regression suite's shipped dependencies
+        working-directory: cypress-tests
+        run: npm audit --omit=dev
+
+      # go.mod pins the minimum patch release, so this also fails when someone
+      # lowers it. Twenty-three standard-library advisories reached the
+      # services this way before the pin existed.
+      - name: Use the Go the module requires
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Pinned rather than @latest. The vulnerability database updates
+      # independently of the scanner, so this still reports newly disclosed
+      # advisories, while a scanner release cannot turn the gate red on a day
+      # nobody touched the repository.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+
+      - name: Scan reachable Go vulnerabilities
+        run: govulncheck ./...
+
   # Each service against a stub of its neighbours. Fast, and blind by
   # construction to anything that depends on how a real dependency behaves.
   unit:
