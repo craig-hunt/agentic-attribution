@@ -1,8 +1,10 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +37,10 @@ func newFakeCluster(t *testing.T) *fakeCluster {
 	c.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		c.calls = append(c.calls, recordedCall{r.Method, r.URL.String(), string(body)})
+
+		// Recording consumes the body, so a handler inspecting what arrived
+		// would otherwise read nothing. Restoring it keeps both uses working.
+		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		for prefix, handler := range c.handlers {
 			if strings.HasPrefix(r.URL.Path, prefix) {
@@ -684,5 +690,190 @@ func TestBulkIndexSendsEveryOfferField(t *testing.T) {
 	// embedding_source feeds the model and has no business in the index.
 	if strings.Contains(body, "embedding_source") {
 		t.Errorf("bulk body carries embedding_source: %s", body)
+	}
+}
+
+// Inference competes for the same heap the k-NN graphs build in, so the ML
+// circuit breaker opens here under exactly the pressure that opens it during
+// bulk indexing. BulkIndex carried this guard from the start and Embed did
+// not, so a seed failed outright at the one call that lacked it.
+func TestEmbedRetriesWhenTheClusterShedsLoad(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_plugins/_ml/_predict/"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"circuit_breaking_exception"},"status":429}`))
+			return
+		}
+		_, _ = w.Write([]byte(vectorResponse(2, EmbeddingDimensions)))
+	}
+
+	vectors, err := cluster.client().Embed(context.Background(), "model_1", []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vectors) != 2 {
+		t.Fatalf("got %d vectors, want 2", len(vectors))
+	}
+	if attempts != 3 {
+		t.Errorf("sent %d attempts, want 3", attempts)
+	}
+}
+
+// A circuit breaker can answer 429 or name itself in the body. Recognising
+// only the status would leave the other shape unretried.
+func TestEmbedRetriesACircuitBreakerNamedInTheBody(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_plugins/_ml/_predict/"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"circuit_breaking_exception: open"}`))
+			return
+		}
+		_, _ = w.Write([]byte(vectorResponse(1, EmbeddingDimensions)))
+	}
+
+	if _, err := cluster.client().Embed(context.Background(), "model_1", []string{"a"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("sent %d attempts, want 2", attempts)
+	}
+}
+
+// Retrying a request the cluster refuses on its merits produces the same
+// refusal every time and hides the real error behind a delay.
+func TestEmbedDoesNotRetryARejectedRequest(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_plugins/_ml/_predict/"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"no such model"}`))
+	}
+
+	if _, err := cluster.client().Embed(context.Background(), "model_1", []string{"a"}); err == nil {
+		t.Fatal("Embed succeeded against a rejected request")
+	}
+	if attempts != 1 {
+		t.Errorf("sent %d attempts for a non-retriable failure, want 1", attempts)
+	}
+}
+
+func TestEmbedGivesUpAfterTheAttemptLimit(t *testing.T) {
+	shortenBulkBackoff(t)
+
+	cluster := newFakeCluster(t)
+	attempts := 0
+	cluster.handlers["/_plugins/_ml/_predict/"] = func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"circuit_breaking_exception"}`))
+	}
+
+	if _, err := cluster.client().Embed(context.Background(), "model_1", []string{"a"}); err == nil {
+		t.Fatal("Embed retried forever against a cluster that never recovered")
+	}
+	if attempts != bulkMaxAttempts {
+		t.Errorf("sent %d attempts, want %d", attempts, bulkMaxAttempts)
+	}
+}
+
+// One request carrying every text in a bulk batch asks the cluster to hold the
+// whole working set at once, which is what opened the circuit breaker rather
+// than what recovered from it.
+func TestEmbedSplitsALargeBatchIntoGroups(t *testing.T) {
+	cluster := newFakeCluster(t)
+
+	sizes := []int{}
+	cluster.handlers["/_plugins/_ml/_predict/"] = func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Texts []string `json:"text_docs"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		sizes = append(sizes, len(body.Texts))
+
+		_, _ = w.Write([]byte(vectorResponse(len(body.Texts), EmbeddingDimensions)))
+	}
+
+	texts := make([]string, BulkBatchSize)
+	for i := range texts {
+		texts[i] = "product text"
+	}
+
+	vectors, err := cluster.client().Embed(context.Background(), "model_1", texts)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+
+	// Every text still gets a vector, and they stay in order, or documents
+	// would carry embeddings belonging to other products.
+	if len(vectors) != len(texts) {
+		t.Fatalf("got %d vectors for %d texts", len(vectors), len(texts))
+	}
+
+	for i, size := range sizes {
+		if size > EmbedBatchSize {
+			t.Errorf("group %d carried %d texts, over the limit of %d", i, size, EmbedBatchSize)
+		}
+	}
+	if len(sizes) < 2 {
+		t.Errorf("a batch of %d went out in %d request(s), so it never split", len(texts), len(sizes))
+	}
+}
+
+func TestEmbedKeepsVectorsInRequestOrderAcrossGroups(t *testing.T) {
+	cluster := newFakeCluster(t)
+
+	call := 0
+	cluster.handlers["/_plugins/_ml/_predict/"] = func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Texts []string `json:"text_docs"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		call++
+
+		// Each group answers with a distinguishable first value, so a
+		// reordering across groups shows up rather than hiding.
+		values := make([]string, EmbeddingDimensions)
+		for i := range values {
+			values[i] = fmt.Sprintf("%d", call)
+		}
+		vector := `{"output":[{"name":"sentence_embedding","data":[` + strings.Join(values, ",") + `]}]}`
+
+		results := make([]string, len(body.Texts))
+		for i := range results {
+			results[i] = vector
+		}
+		_, _ = w.Write([]byte(`{"inference_results":[` + strings.Join(results, ",") + `]}`))
+	}
+
+	texts := make([]string, EmbedBatchSize*2)
+	for i := range texts {
+		texts[i] = "product text"
+	}
+
+	vectors, err := cluster.client().Embed(context.Background(), "model_1", texts)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+
+	if vectors[0][0] != 1 {
+		t.Errorf("first vector came from group %v, want the first", vectors[0][0])
+	}
+	if vectors[len(vectors)-1][0] != 2 {
+		t.Errorf("last vector came from group %v, want the second", vectors[len(vectors)-1][0])
 	}
 }

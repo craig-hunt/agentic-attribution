@@ -30,11 +30,22 @@ const (
 	// clear of the ML circuit breaker; larger batches trip it on a laptop.
 	BulkBatchSize = 200
 
-	// A bulk load that cannot absorb backpressure fails on the machine with
-	// the least memory rather than slowing down on it. Documents carry
-	// product_id as _id, so replaying a whole batch overwrites rather than
-	// duplicates, which makes retrying the simple thing to do.
-	bulkMaxAttempts = 6
+	// Inference happens in one request per group rather than one per bulk
+	// batch. Two hundred texts at once is a large enough working set to trip
+	// the ML circuit breaker on a laptop, and retrying afterwards recovers from
+	// pressure this avoids creating. Smaller groups cost round trips, which are
+	// cheap next to a seed that fails outright.
+	EmbedBatchSize = 50
+
+	// A load that cannot absorb backpressure fails on the machine with the
+	// least memory rather than slowing down on it. Documents carry product_id
+	// as _id, so replaying a whole batch overwrites rather than duplicates,
+	// which makes retrying the simple thing to do.
+	//
+	// Eight attempts doubling from half a second waits about a minute in total.
+	// A breaker that opens under heap pressure stays open until a collection
+	// runs, which takes longer than the fifteen seconds six attempts allowed.
+	bulkMaxAttempts = 8
 
 	// Target replica count restored after load completes. Zero during load
 	// because replicas duplicate every indexing operation.
@@ -271,13 +282,47 @@ func (c *OpenSearchClient) Embed(ctx context.Context, modelID string, texts []st
 		return nil, nil
 	}
 
+	// Split before sending. One request carrying every text in a bulk batch
+	// asks the cluster to hold the whole working set at once, which is what
+	// opened the breaker rather than what recovered from it.
+	if len(texts) > EmbedBatchSize {
+		vectors := make([][]float32, 0, len(texts))
+
+		for start := 0; start < len(texts); start += EmbedBatchSize {
+			end := min(start+EmbedBatchSize, len(texts))
+
+			group, err := c.Embed(ctx, modelID, texts[start:end])
+			if err != nil {
+				return nil, err
+			}
+
+			vectors = append(vectors, group...)
+		}
+
+		return vectors, nil
+	}
+
 	request := map[string]any{
 		"text_docs":       texts,
 		"return_number":   true,
 		"target_response": []string{"sentence_embedding"},
 	}
 
-	raw, err := c.do(ctx, http.MethodPost, "/_plugins/_ml/_predict/text_embedding/"+modelID, request)
+	// Inference runs inside the cluster and competes for the same heap the
+	// k-NN graphs build in, so the ML circuit breaker opens here under exactly
+	// the pressure that opens it during bulk indexing. Without this guard a
+	// seed fails outright on the machine with the least memory rather than
+	// slowing down on it.
+	var raw json.RawMessage
+	err := retryUnderPressure(ctx, func() error {
+		var attemptErr error
+		raw, attemptErr = c.do(ctx, http.MethodPost, "/_plugins/_ml/_predict/text_embedding/"+modelID, request)
+		if attemptErr != nil && rejectedUnderPressure(attemptErr) {
+			return fmt.Errorf("%w: %s", errBulkRejected, attemptErr)
+		}
+
+		return attemptErr
+	})
 	if err != nil {
 		return nil, fmt.Errorf("predict embeddings: %w", err)
 	}
@@ -396,17 +441,37 @@ func (c *OpenSearchClient) BulkIndex(ctx context.Context, index string, docs []P
 	}
 
 	body := buf.Bytes()
+
+	// A rejection under pressure describes a cluster asking for less at once,
+	// not a bad request. Retrying it is the whole point.
+	return retryUnderPressure(ctx, func() error {
+		return c.bulkAttempt(ctx, body)
+	})
+}
+
+// errBulkRejected marks the failures worth retrying: a cluster shedding load
+// rather than refusing the request. Everything else fails the load immediately,
+// because retrying a malformed document produces the same result six times.
+var errBulkRejected = errors.New("rejected under pressure")
+
+// retryUnderPressure runs an attempt until it succeeds, until it fails for a
+// reason retrying cannot fix, or until the attempts run out.
+//
+// Shared rather than written per call site. Bulk indexing carried this guard
+// and embedding did not, so a run that pushed the cluster into its circuit
+// breaker failed the whole seed at the one call that lacked it. Routing every
+// pressure-sensitive request through here means a path added later inherits
+// the behaviour rather than having to remember it.
+func retryUnderPressure(ctx context.Context, attempt func() error) error {
 	delay := bulkRetryBaseDelay
 
-	for attempt := 1; ; attempt++ {
-		err := c.bulkAttempt(ctx, body)
+	for tries := 1; ; tries++ {
+		err := attempt()
 		if err == nil {
 			return nil
 		}
 
-		// A rejection under pressure describes a cluster asking for less at
-		// once, not a bad request. Retrying it is the whole point.
-		if !errors.Is(err, errBulkRejected) || attempt == bulkMaxAttempts {
+		if !errors.Is(err, errBulkRejected) || tries == bulkMaxAttempts {
 			return err
 		}
 
@@ -419,15 +484,17 @@ func (c *OpenSearchClient) BulkIndex(ctx context.Context, index string, docs []P
 	}
 }
 
-// errBulkRejected marks the failures worth retrying: a cluster shedding load
-// rather than refusing the request. Everything else fails the load immediately,
-// because retrying a malformed document produces the same result six times.
-var errBulkRejected = errors.New("bulk rejected under pressure")
+// rejectedUnderPressure reports whether a cluster refused a request because it
+// was shedding load rather than because the request was wrong.
+func rejectedUnderPressure(err error) bool {
+	return strings.Contains(err.Error(), "returned 429") ||
+		strings.Contains(err.Error(), "circuit_breaking_exception")
+}
 
 func (c *OpenSearchClient) bulkAttempt(ctx context.Context, body []byte) error {
 	raw, err := c.do(ctx, http.MethodPost, "/_bulk", body)
 	if err != nil {
-		if strings.Contains(err.Error(), "returned 429") {
+		if rejectedUnderPressure(err) {
 			return fmt.Errorf("%w: %s", errBulkRejected, err)
 		}
 		return err

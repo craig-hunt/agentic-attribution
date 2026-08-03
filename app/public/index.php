@@ -13,6 +13,7 @@ require __DIR__ . '/../src/bootstrap.php';
 
 const DEFAULT_SETTLEMENT_URL = 'http://localhost:8082';
 const DEFAULT_DRIVER_URL = 'http://localhost:8096';
+const DEFAULT_FACILITATOR_URL = 'http://localhost:8095';
 const SETTLEMENT_PAGE_SIZE = 25;
 
 // Bounds on what the browser may ask the driver for. The control endpoints sit
@@ -23,6 +24,7 @@ const MIN_CONCURRENCY = 1;
 
 $settlementUrl = getenv('SETTLEMENT_URL') ?: DEFAULT_SETTLEMENT_URL;
 $driverUrl = getenv('DRIVER_URL') ?: DEFAULT_DRIVER_URL;
+$facilitatorUrl = getenv('FACILITATOR_URL') ?: DEFAULT_FACILITATOR_URL;
 
 $client = new SettlementClient($settlementUrl);
 $driver = new DriverClient($driverUrl);
@@ -112,6 +114,43 @@ $router->post('/api/driver/once', static function () use ($driver, $json, $contr
 
 $router->post('/api/driver/stop', static function () use ($driver, $json): Response {
     return $json($driver->stop());
+});
+
+// Proxied for the same reason the driver is: the facilitator publishes no
+// port a browser can reach, and a regression suite needs to arm a fault, watch
+// the platform handle it, and clear it again.
+$router->post('/api/facilitator/fault', static function () use ($facilitatorUrl, $json): Response {
+    $body = json_decode(file_get_contents('php://input') ?: '[]', true);
+    $mode = is_array($body) && is_string($body['mode'] ?? null) ? $body['mode'] : '';
+
+    $handle = curl_init($facilitatorUrl . '/fault');
+    if ($handle === false) {
+        return $json(['error' => 'could not initialise the HTTP client'], 500);
+    }
+
+    curl_setopt_array($handle, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 10,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => json_encode(['mode' => $mode], JSON_THROW_ON_ERROR),
+    ]);
+
+    $response = curl_exec($handle);
+    $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($handle);
+    curl_close($handle);
+
+    // Naming the transport error rather than swallowing it. A bare
+    // "unreachable" sends whoever reads it looking at the network when the
+    // cause is usually a URL this process never received.
+    if ($response === false) {
+        return $json(['error' => 'facilitator unreachable: ' . $error, 'url' => $facilitatorUrl], 502);
+    }
+
+    $decoded = json_decode((string) $response, true);
+
+    return $json(is_array($decoded) ? $decoded : ['error' => 'facilitator returned a non-JSON body'], $status ?: 502);
 });
 
 $router->get('/healthz', static function (): Response {

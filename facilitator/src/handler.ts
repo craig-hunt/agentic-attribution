@@ -18,7 +18,34 @@ export const ROUTE = {
   Verify: '/verify',
   Settle: '/settle',
   Health: '/healthz',
+  Fault: '/fault',
 } as const;
+
+/**
+ * Faults this facilitator can be told to inject.
+ *
+ * A mock that only ever succeeds leaves the platform's failure handling
+ * untested: settlements never reach a failed state, the ledger never proves it
+ * writes nothing for one, and the dashboard's failed column stays zero forever
+ * while its filter claims to work. Injecting a fault on demand exercises paths
+ * a real facilitator would eventually produce anyway.
+ *
+ * Controlled at runtime rather than through configuration so a test can turn
+ * one on, assert, and turn it off again without restarting a service that
+ * other tests are using.
+ */
+export const FAULT = {
+  None: 'none',
+  VerifyRejects: 'verify_rejects',
+  SettleFails: 'settle_fails',
+  Unavailable: 'unavailable',
+} as const;
+
+export type FaultMode = (typeof FAULT)[keyof typeof FAULT];
+
+export interface FaultState {
+  mode: FaultMode;
+}
 
 export interface FacilitatorRequest {
   x402Version: number;
@@ -78,6 +105,9 @@ export interface HandlerOptions {
   nonces: NonceLedger;
   clock?: () => number;
   onSettled?: (record: SettlementRecord) => void;
+  // Absent means fault injection stays unavailable and /fault answers 404,
+  // which is what a deployment wanting no such control would leave it as.
+  fault?: FaultState;
 }
 
 /**
@@ -95,7 +125,66 @@ export async function handle(
   options: HandlerOptions,
 ): Promise<FacilitatorResponse> {
   if (method === 'GET' && path === ROUTE.Health) {
-    return { status: 200, body: { status: 'ok', mode: 'mock' } };
+    // The fault key appears only where injection is configured, so a
+    // deployment without it answers exactly what it always answered.
+    return {
+      status: 200,
+      body: options.fault
+        ? { status: 'ok', mode: 'mock', fault: options.fault.mode }
+        : { status: 'ok', mode: 'mock' },
+    };
+  }
+
+  // Reading and setting the injected fault. A GET answers what is armed, and a
+  // POST arms or clears it.
+  if (path === ROUTE.Fault) {
+    if (!options.fault) {
+      return { status: 404, body: { error: 'fault injection unavailable' } };
+    }
+
+    if (method === 'GET') {
+      return { status: 200, body: { mode: options.fault.mode } };
+    }
+
+    if (method === 'POST') {
+      const requested = (body as unknown as { mode?: string } | null)?.mode;
+      const known = Object.values(FAULT).includes(requested as FaultMode);
+
+      if (!known) {
+        return {
+          status: 400,
+          body: { error: `unknown fault mode`, known: Object.values(FAULT) },
+        };
+      }
+
+      options.fault.mode = requested as FaultMode;
+
+      return { status: 200, body: { mode: options.fault.mode } };
+    }
+
+    return { status: 404, body: { error: 'not found' } };
+  }
+
+  // An armed fault answers before any verification runs, because a facilitator
+  // that has fallen over does not get as far as checking a signature.
+  if (options.fault && options.fault.mode !== FAULT.None) {
+    if (options.fault.mode === FAULT.Unavailable) {
+      return { status: 503, body: { error: 'facilitator unavailable', injected: true } };
+    }
+
+    if (options.fault.mode === FAULT.VerifyRejects && path === ROUTE.Verify) {
+      return {
+        status: 200,
+        body: { isValid: false, invalidReason: 'injected_fault', injected: true },
+      };
+    }
+
+    if (options.fault.mode === FAULT.SettleFails && path === ROUTE.Settle) {
+      return {
+        status: 200,
+        body: { success: false, errorReason: 'injected_fault', injected: true },
+      };
+    }
   }
 
   if (method !== 'POST' || (path !== ROUTE.Verify && path !== ROUTE.Settle)) {

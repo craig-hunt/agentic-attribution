@@ -60,6 +60,7 @@ declare(strict_types=1);
         return null;
       }
       render(body);
+      await pollTotals();
       // A single run leaves rows behind that the next poll would otherwise
       // take up to POLL_MS to show. Each page registers its own refresh,
       // because the index and the detail view read different endpoints.
@@ -79,10 +80,9 @@ declare(strict_types=1);
     buttons.start.disabled = !!s.running;
     // Written per node rather than by rebuilding the row, so pressing a chip
     // does not lose its focus to the next poll a fraction of a second later.
-    $('stat-settled').textContent = s.settled;
-    $('stat-blocked').textContent = s.blocked;
-    $('stat-failed').textContent = s.failed;
-    $('stat-mode').textContent = s.running ? `${s.concurrency} agents running` : 'stopped';
+    $('stat-mode').textContent = s.running
+      ? `${s.concurrency} agents running · ${s.settled} settled this run`
+      : 'stopped';
     if (s.lastEvent) { event.textContent = s.lastEvent; }
   };
 
@@ -119,8 +119,30 @@ declare(strict_types=1);
     }
   };
 
+  // The chips count what the table holds, not what this run happened to do.
+  // Sourcing them from the driver made the two disagree the moment a run ended
+  // or a page was opened fresh, and a filter whose count contradicts the rows
+  // it reveals reads as a broken page rather than as two different measures.
+  const pollTotals = async () => {
+    let publishers;
+    try {
+      publishers = (await (await fetch('/api/publishers')).json()).publishers;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(publishers)) { return; }
+
+    const total = (field) => publishers.reduce((sum, p) => sum + (p[field] ?? 0), 0);
+
+    $('stat-settled').textContent = total('settlement_count');
+    $('stat-blocked').textContent = total('blocked_count');
+    $('stat-failed').textContent = total('failed_count');
+  };
+
   setInterval(pollStatus, POLL_MS);
+  setInterval(pollTotals, POLL_MS);
   setInterval(() => window.agenticRefresh?.(), POLL_MS);
   pollStatus();
+  pollTotals();
 })();
 </script>

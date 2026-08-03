@@ -30,6 +30,7 @@ func NewHandler(svc *Service, log *slog.Logger) *Handler {
 func (h *Handler) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /settle", h.handleSettle)
+	mux.HandleFunc("POST /rejections", h.handleRecordRejection)
 	mux.HandleFunc("GET /healthz", h.handleHealth)
 	mux.HandleFunc("GET /publishers", h.handleListPublishers)
 	mux.HandleFunc("GET /publishers/{publisherID}", h.handlePublisherDetail)
@@ -153,6 +154,46 @@ func statusFor(err error) (int, string) {
 	default:
 		return http.StatusInternalServerError, reasonInternalError
 	}
+}
+
+// handleRecordRejection journals a refusal another service made.
+//
+// The merchant verifies an assertion before it forwards anything, so a
+// tampered or expired one never reaches /settle and settlement never learns it
+// happened. Without this endpoint the platform refuses an attack and records
+// nothing, which leaves an operator unable to tell a quiet week from an
+// undetected campaign.
+//
+// The schema stays private to the service that owns it, so the merchant
+// reports through HTTP rather than writing to Postgres itself.
+func (h *Handler) handleRecordRejection(w http.ResponseWriter, r *http.Request) {
+	var body Rejection
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "malformed request body", Reason: "bad_request"})
+		return
+	}
+
+	if body.PublisherID == "" || body.Reason == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{
+			Error:  "publisher_id and reason are both required",
+			Reason: "bad_request",
+		})
+		return
+	}
+
+	if err := h.svc.store.RecordRejection(r.Context(), body); err != nil {
+		h.log.Error("record reported rejection", "reason", body.Reason, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error(), Reason: reasonInternalError})
+		return
+	}
+
+	h.log.Info("rejection reported",
+		"publisher_id", body.PublisherID,
+		"reason", body.Reason,
+		"assertion_id", body.AssertionID,
+	)
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "recorded"})
 }
 
 func (h *Handler) handleSettle(w http.ResponseWriter, r *http.Request) {

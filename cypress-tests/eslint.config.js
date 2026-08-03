@@ -3,6 +3,7 @@ const tsParser = require('@typescript-eslint/parser');
 const cypressPlugin = require('eslint-plugin-cypress');
 const prettierConfig = require('eslint-config-prettier');
 const prettierPlugin = require('eslint-plugin-prettier');
+const globals = require('globals');
 
 module.exports = [
   {
@@ -16,14 +17,18 @@ module.exports = [
         ecmaVersion: 'latest',
         sourceType: 'module',
       },
+      // Flat config maps each global identifier to its mutability. Writing
+      // `browser: true` here would declare a writable global named "browser"
+      // rather than enabling the browser environment, which reads as an
+      // environment flag while silently permitting an undefined identifier.
       globals: {
+        ...globals.browser,
+        ...globals.node,
+        ...globals.mocha,
         cy: 'readonly',
         Cypress: 'readonly',
         expect: 'readonly',
         assert: 'readonly',
-        browser: true,
-        node: true,
-        es2021: true,
       },
     },
     plugins: {

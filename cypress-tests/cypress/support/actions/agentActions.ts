@@ -102,6 +102,28 @@ class AgentActions {
     });
   }
 
+  /**
+   * Presents an arbitrary payment payload, so a spec can send one that decodes
+   * as JSON while carrying the wrong shape. signAuthorization builds only
+   * well-formed payloads, which cannot exercise the validation.
+   */
+  attemptPurchaseWithRawPayment(
+    productId: string,
+    assertion: AttributionAssertion,
+    payment: unknown
+  ): Cypress.Chainable<Cypress.Response<Record<string, unknown>>> {
+    return cy.request<Record<string, unknown>>({
+      method: 'POST',
+      url: gatewayUrl(GatewayPaths.Purchase),
+      body: { product_id: productId },
+      headers: {
+        [X402Headers.PaymentSignature]: this.#encodeHeader(payment),
+        [X402Headers.AttributionAssertion]: this.#encodeHeader(assertion),
+      },
+      failOnStatusCode: false,
+    });
+  }
+
   #encodeHeader(value: unknown): string {
     return btoa(JSON.stringify(value));
   }

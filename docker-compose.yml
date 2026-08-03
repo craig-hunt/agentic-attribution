@@ -163,6 +163,9 @@ services:
       GATEWAY_PORT: "8080"
       SEARCH_URL: http://search:8081
       MERCHANT_URL: http://merchant:8090
+      # The edge refuses forged and expired assertions, so without this those
+      # refusals would never reach a service that could record them.
+      SETTLEMENT_URL: http://settlement:8082
     ports:
       - "8080:8080"
 
@@ -191,6 +194,7 @@ services:
     environment:
       SETTLEMENT_URL: http://settlement:8082
       DRIVER_URL: http://driver:8096
+      FACILITATOR_URL: http://facilitator:8095
     ports:
       - "8000:8000"
 
@@ -227,8 +231,9 @@ services:
   # which is also how it reaches the driver: that service publishes no port and
   # the dashboard proxies to it.
   #
-  # Authoring specs happens on the host instead, where `cypress open` gives a
-  # runner and time travel. See cypress-tests/README.md.
+  # Authoring specs happens either on the host or through the e2e-open profile
+  # below, both of which give a runner and time travel.
+  # cypress-tests/README.md covers the layering and the conventions.
   cypress:
     build:
       context: .

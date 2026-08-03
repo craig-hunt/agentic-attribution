@@ -20,6 +20,7 @@ export const DashboardApiPaths = {
   DriverStart: '/api/driver/start',
   DriverStop: '/api/driver/stop',
   DriverOnce: '/api/driver/once',
+  FacilitatorFault: '/api/facilitator/fault',
 } as const;
 
 export const GatewayPaths = {

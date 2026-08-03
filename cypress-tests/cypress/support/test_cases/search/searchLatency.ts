@@ -13,8 +13,8 @@ describe('Search answers inside its latency budget', () => {
   });
 
   // The service publishes what it measured, which excludes the network hop the
-  // duration above includes. A large gap between the two points at the edge
-  // rather than at retrieval.
+  // duration above includes. When those two figures diverge sharply, the cost
+  // sits at the edge rather than in retrieval.
   it('reports its own latency alongside the results', () => {
     agentActions.search(Queries.Alternate, Publishers.Demo).then((response) => {
       expect(response.body.latency_ms).to.be.a('number');

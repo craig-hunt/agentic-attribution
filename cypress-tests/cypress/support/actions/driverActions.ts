@@ -46,6 +46,21 @@ class DriverActions {
     });
   }
 
+  /**
+   * Arms or clears a fault in the mock facilitator.
+   *
+   * Every spec that arms one clears it in an afterEach, because a fault left
+   * armed turns every later spec red for a reason none of them describe.
+   */
+  setFault(mode: string): Cypress.Chainable<Cypress.Response<{ mode: string }>> {
+    return cy.request<{ mode: string }>({
+      method: 'POST',
+      url: dashboardApiUrl(DashboardApiPaths.FacilitatorFault),
+      body: { mode },
+      failOnStatusCode: false,
+    });
+  }
+
   publishers(): Cypress.Chainable<Cypress.Response<{ publishers: PublisherSummaryRow[] }>> {
     return cy.request<{ publishers: PublisherSummaryRow[] }>({
       url: dashboardApiUrl(DashboardApiPaths.Publishers),

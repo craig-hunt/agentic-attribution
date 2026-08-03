@@ -69,6 +69,49 @@ export function decodeAssertionHeader(encoded: string): AttributionAssertion {
   return decodeHeaderJson<AttributionAssertion>(encoded);
 }
 
+export class MalformedPaymentError extends Error {
+  readonly reason = 'malformed_payment';
+}
+
+const AUTHORIZATION_FIELDS = [
+  'from',
+  'to',
+  'value',
+  'validAfter',
+  'validBefore',
+  'nonce',
+] as const;
+
+/**
+ * Decodes and validates a payment payload.
+ *
+ * A cast alone is a claim TypeScript cannot keep at runtime. Without checking,
+ * a caller sending `{}` reaches a dereference of payment.authorization.value
+ * and the merchant answers 502 carrying a JavaScript runtime message, which
+ * tells an attacker the implementation language and hands an agent a status
+ * suggesting the merchant broke rather than the request did.
+ */
 export function decodePaymentHeader(encoded: string): PaymentPayload {
-  return decodeHeaderJson<PaymentPayload>(encoded);
+  const decoded = decodeHeaderJson<Partial<PaymentPayload>>(encoded);
+
+  if (typeof decoded !== 'object' || decoded === null) {
+    throw new MalformedPaymentError('payment payload is not an object');
+  }
+
+  const authorization = decoded.authorization as Record<string, unknown> | undefined;
+  if (typeof authorization !== 'object' || authorization === null) {
+    throw new MalformedPaymentError('payment payload carries no authorization');
+  }
+
+  for (const field of AUTHORIZATION_FIELDS) {
+    if (typeof authorization[field] !== 'string') {
+      throw new MalformedPaymentError(`authorization.${field} is missing or not a string`);
+    }
+  }
+
+  if (typeof decoded.signature !== 'string' || decoded.signature === '') {
+    throw new MalformedPaymentError('payment payload carries no signature');
+  }
+
+  return decoded as PaymentPayload;
 }

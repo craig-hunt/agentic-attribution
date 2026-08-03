@@ -67,6 +67,43 @@ export const Money = {
 // tampered or expired one never reaches settlement. The two layers name the
 // same refusal differently, which is worth knowing when reading logs: the
 // TypeScript verifier in packages/types answers with these.
+export const MerchantRejectionReasons = {
+  MalformedPayment: 'malformed_payment',
+  MalformedHeaders: 'malformed_headers',
+  ProductMismatch: 'assertion_product_mismatch',
+  PayeeMismatch: 'payee_mismatch',
+  AmountMismatch: 'amount_mismatch',
+} as const;
+
+// Payloads that decode as JSON but carry the wrong shape. A cast cannot catch
+// these, so the merchant validates before it dereferences.
+export const MalformedPayments = {
+  Empty: {},
+  NoAuthorization: { x402Version: 1, scheme: 'exact', network: 'base-sepolia', signature: '0x' },
+  EmptyAuthorization: { authorization: {}, signature: '0x' },
+  NoSignature: {
+    x402Version: 1,
+    scheme: 'exact',
+    network: 'base-sepolia',
+    authorization: {
+      from: '0x1',
+      to: '0x2',
+      value: '1',
+      validAfter: '0',
+      validBefore: '99999999999',
+      nonce: '0x0',
+    },
+  },
+} as const;
+
+// The gateway's own refusals, answered before any service downstream sees the
+// request.
+export const GatewayRejectionReasons = {
+  BodyTooLarge: 'body_too_large',
+  AssertionMissing: 'assertion_missing',
+  MalformedHeaders: 'malformed_headers',
+} as const;
+
 export const EdgeRejectionReasons = {
   SignatureInvalid: 'invalid_signature',
   Expired: 'expired',
@@ -87,12 +124,34 @@ export const SettlementRejectionReasons = {
 // Every reason either layer can answer with, for a spec asserting that a
 // refusal names something an operator can act on rather than nothing.
 export const AllRejectionReasons = [
+  ...Object.values(GatewayRejectionReasons),
   ...Object.values(EdgeRejectionReasons),
+  ...Object.values(MerchantRejectionReasons),
   ...Object.values(SettlementRejectionReasons),
 ] as const;
 
+// Faults the mock facilitator can be told to inject, so the platform's failure
+// handling gets exercised rather than assumed.
+export const Faults = {
+  None: 'none',
+  VerifyRejects: 'verify_rejects',
+  SettleFails: 'settle_fails',
+  Unavailable: 'unavailable',
+} as const;
+
+// The gateway accepts 256KB. A spec has to exceed that rather than guess at a
+// figure that merely looks large.
+export const BodyLimits = {
+  GatewayMaxBytes: 262_144,
+  OversizedQueryChars: 300_000,
+} as const;
+
 export const HttpStatus = {
   Ok: 200,
+  BadRequest: 400,
+  PayloadTooLarge: 413,
+  Unprocessable: 422,
+  BadGateway: 502,
   PaymentRequired: 402,
   Unauthorized: 401,
   Conflict: 409,

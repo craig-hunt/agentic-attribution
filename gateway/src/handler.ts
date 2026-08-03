@@ -17,6 +17,11 @@ import {
 export interface GatewayEnv {
   SEARCH_URL: string;
   MERCHANT_URL: string;
+  // Optional. The gateway refuses forged and expired assertions here, which
+  // means those refusals never reach any service that could record them. Set
+  // this and the edge journals what it stopped; leave it unset and the gateway
+  // still refuses, silently.
+  SETTLEMENT_URL?: string;
   ATTRIBUTION_PUBLIC_KEY: string;
 }
 
@@ -207,14 +212,33 @@ export async function handle(
     return proxy(request, `${env.MERCHANT_URL}${ROUTE.Purchase}`, body);
   }
 
+  // A payment presented without an assertion is an attempt to buy while
+  // claiming nothing, which the platform refuses and therefore records.
   if (!assertionHeader) {
+    reportRejection(env, {
+      publisher_id: UNKNOWN_PUBLISHER,
+      assertion_id: '',
+      merchant_id: '',
+      reason: 'assertion_missing',
+      detail: 'payment supplied without an assertion',
+    });
+
     return json({ error: 'payment supplied without an assertion', reason: 'assertion_missing' }, 400);
   }
+
 
   let assertion: AttributionAssertion;
   try {
     assertion = decodeHeaderJson<AttributionAssertion>(assertionHeader);
   } catch {
+    reportRejection(env, {
+      publisher_id: UNKNOWN_PUBLISHER,
+      assertion_id: '',
+      merchant_id: '',
+      reason: 'malformed_headers',
+      detail: 'assertion header is not base64 JSON',
+    });
+
     return json({ error: 'assertion header is not base64 JSON', reason: 'malformed_headers' }, 400);
   }
 
@@ -226,6 +250,14 @@ export async function handle(
     await verifyAssertion(assertion, await verificationKey(env), now);
   } catch (error) {
     if (error instanceof AssertionVerificationError) {
+      reportRejection(env, {
+        publisher_id: assertion.publisher_id || UNKNOWN_PUBLISHER,
+        assertion_id: assertion.assertion_id ?? '',
+        merchant_id: '',
+        reason: error.reason,
+        detail: error.message,
+      });
+
       return json({ error: error.message, reason: error.reason }, 401);
     }
     throw error;
@@ -240,3 +272,37 @@ export default {
   // execution context where a Date belongs.
   fetch: (request: Request, env: GatewayEnv): Promise<Response> => handle(request, env),
 };
+
+// An attempt naming no publisher still deserves a row, so a sentinel keeps the
+// count honest rather than dropping the evidence.
+const UNKNOWN_PUBLISHER = 'unknown';
+
+export interface RejectionReport {
+  publisher_id: string;
+  assertion_id: string;
+  merchant_id: string;
+  reason: string;
+  detail: string;
+}
+
+/**
+ * Journals a refusal the edge made, so a platform that stops an attack records
+ * that it happened.
+ *
+ * Deliberately unawaited and never throwing. The gateway has already decided
+ * to refuse, and neither a slow settlement service nor an unreachable one may
+ * delay that refusal or turn it into an error the caller could retry against.
+ */
+function reportRejection(env: GatewayEnv, report: RejectionReport): void {
+  if (!env.SETTLEMENT_URL) {
+    return;
+  }
+
+  void fetch(`${env.SETTLEMENT_URL.replace(/\/+$/, '')}/rejections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(report),
+  }).catch(() => {
+    // A journal that cannot be written must not change what the edge answers.
+  });
+}

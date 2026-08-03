@@ -456,10 +456,11 @@ terminal with no extra setup. A minimal WSL install does not, and
 [`RUNNING.md`](docs/RUNNING.md) lists what to add there. Both container targets
 sidestep all of it.
 
-Run one spec while iterating:
+Run one spec while iterating. Arguments pass through after `--`, which behaves
+the same in bash, PowerShell, and cmd:
 
 ```bash
-npm run cypress:single --spec=fraud/replayedAssertion
+npm run cypress:single -- --spec "cypress/support/test_cases/fraud/replayedAssertion.ts"
 ```
 
 **What it covers.** The seven flows [ADR-0006](docs/adr/0006-testing-strategy.md)

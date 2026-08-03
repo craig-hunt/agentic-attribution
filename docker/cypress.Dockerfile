@@ -7,6 +7,7 @@ FROM cypress/included:14.5.4
 WORKDIR /suite
 
 ENV CYPRESS_INSTALL_BINARY=0
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
 # Manifests first, so editing a spec does not invalidate the install layer.
 COPY cypress-tests/package.json cypress-tests/package-lock.json ./

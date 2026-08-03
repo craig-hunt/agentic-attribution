@@ -2,6 +2,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import { handle, type GatewayEnv } from './handler.js';
 
+const HTTP_PAYLOAD_TOO_LARGE = 413;
+
+// Distinguished from every other failure so the catch answers a client error
+// rather than a server one. The handler already returns 413 for the same
+// condition; without this the Node adapter answered 502 and that path was
+// unreachable in this deployment.
+class RequestTooLargeError extends Error {}
+
+
 // The only file in this package that imports a Node built-in. Everything the
 // gateway actually does lives in handler.ts against Web standards, and this
 // adapter exists solely to let node:http speak Request and Response. Deploying
@@ -28,6 +37,7 @@ function requiredEnv(name: string): string {
 const env: GatewayEnv = {
   SEARCH_URL: envOr('SEARCH_URL', 'http://localhost:8081'),
   MERCHANT_URL: envOr('MERCHANT_URL', 'http://localhost:8090'),
+  SETTLEMENT_URL: envOr('SETTLEMENT_URL', 'http://localhost:8082'),
   ATTRIBUTION_PUBLIC_KEY: requiredEnv('ATTRIBUTION_PUBLIC_KEY'),
 };
 
@@ -38,6 +48,7 @@ async function readBody(req: IncomingMessage): Promise<Buffer | undefined> {
     return undefined;
   }
 
+
   const chunks: Buffer[] = [];
   let total = 0;
 
@@ -45,7 +56,7 @@ async function readBody(req: IncomingMessage): Promise<Buffer | undefined> {
     total += (chunk as Buffer).length;
 
     if (total > MAX_BODY_BYTES) {
-      throw new Error('request body too large');
+      throw new RequestTooLargeError(`request body exceeds ${MAX_BODY_BYTES} bytes`);
     }
 
     chunks.push(chunk as Buffer);
@@ -119,12 +130,19 @@ const server = createServer((req, res) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown error';
 
+      // A caller sending too much data made a bad request rather than finding
+      // a broken gateway. Answering 502 tells them the platform failed and
+      // invites the retry that would send the same oversized body again.
+      const tooLarge = error instanceof RequestTooLargeError;
+      const status = tooLarge ? HTTP_PAYLOAD_TOO_LARGE : 502;
+      const reason = tooLarge ? 'body_too_large' : 'gateway_error';
+
       console.error(JSON.stringify({ level: 'error', msg: 'gateway request failed', error: message }));
 
       if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.writeHead(status, { 'Content-Type': 'application/json' });
       }
-      res.end(JSON.stringify({ error: message, reason: 'gateway_error' }));
+      res.end(JSON.stringify({ error: message, reason }));
     }
   })();
 });
