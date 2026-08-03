@@ -269,3 +269,64 @@ func TestUnknownRoutesAndMethods(t *testing.T) {
 		}
 	}
 }
+
+// The merchant verifies an assertion before it forwards anything, so a
+// tampered or expired one never reaches /settle. Without this endpoint the
+// platform refuses an attack and records nothing, which is the logging failure
+// the rejected_attempts table exists to prevent.
+func TestRecordRejectionEndpointJournalsAReportedRefusal(t *testing.T) {
+	routes, _, store := newHandlerUnderTest(t, &stubFacilitator{})
+
+	body := `{"publisher_id":"` + testPublisherID + `","assertion_id":"a_reported",` +
+		`"merchant_id":"mer_000042","reason":"invalid_signature","detail":"verify assertion"}`
+
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/rejections", strings.NewReader(body)))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	rows, err := store.RecentRejections(context.Background(), testPublisherID, 10)
+	if err != nil {
+		t.Fatalf("RecentRejections: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("journalled %d refusals, want 1", len(rows))
+	}
+	if rows[0].Reason != "invalid_signature" {
+		t.Errorf("reason = %q, want invalid_signature", rows[0].Reason)
+	}
+}
+
+// An attempt naming a publisher who does not exist is the signal worth
+// keeping, so no foreign key discards it.
+func TestRecordRejectionEndpointAcceptsAnUnknownPublisher(t *testing.T) {
+	routes, _, _ := newHandlerUnderTest(t, &stubFacilitator{})
+
+	body := `{"publisher_id":"pub_999999","reason":"invalid_signature"}`
+
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/rejections", strings.NewReader(body)))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
+func TestRecordRejectionEndpointRefusesAnUnattributableReport(t *testing.T) {
+	routes, _, _ := newHandlerUnderTest(t, &stubFacilitator{})
+
+	for _, body := range []string{
+		`{"reason":"invalid_signature"}`,
+		`{"publisher_id":"` + testPublisherID + `"}`,
+		`not json`,
+	} {
+		rec := httptest.NewRecorder()
+		routes.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/rejections", strings.NewReader(body)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q returned %d, want %d", body, rec.Code, http.StatusBadRequest)
+		}
+	}
+}

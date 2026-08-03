@@ -1,4 +1,9 @@
-FROM node:22-alpine
+# Node 24 carries the current LTS line. The npm that ships inside the image
+# trails the registry, and its update notice prints on every build, so the
+# notifier gets turned off rather than left to suggest a global install nobody
+# should run inside an image.
+FROM node:24-alpine
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
 WORKDIR /app
 
@@ -24,7 +29,8 @@ RUN npm run build --workspace @agentic-attribution/types
 
 # Stryker needs the Go-minted fixture and the migration files the tests read by
 # relative path, so the test stage carries them.
-FROM node:22-alpine AS test
+FROM node:24-alpine AS test
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
 WORKDIR /app
 COPY --from=0 /app ./
@@ -32,7 +38,8 @@ COPY db ./db
 
 CMD ["npm", "test", "--workspaces", "--if-present"]
 
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
 WORKDIR /app
 COPY --from=0 /app ./

@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import {
+  FAULT,
   MAX_BODY_BYTES,
+  type FaultState,
   NonceLedger,
   handle,
   type FacilitatorRequest,
@@ -39,12 +41,17 @@ async function readJson(req: IncomingMessage): Promise<FacilitatorRequest | null
   }
 }
 
+// Injected faults live for the lifetime of the process. A test arms one,
+// asserts, and clears it, which needs no restart and disturbs nothing else.
+const fault: FaultState = { mode: FAULT.None };
+
 const server = createServer((req, res) => {
   void (async () => {
     const body = req.method === 'POST' ? await readJson(req) : null;
 
     const response = await handle(req.method ?? 'GET', req.url ?? '/', body, {
       nonces,
+      fault,
       onSettled: (record) => {
         console.log(JSON.stringify({ level: 'info', msg: 'settled', ...record }));
       },

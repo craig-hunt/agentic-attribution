@@ -17,6 +17,8 @@ import {
   nowSeconds,
   type FacilitatorRequest,
   type SettlementRecord,
+  FAULT,
+  type FaultState,
 } from './handler.js';
 import type { WireAuthorization } from './verify.js';
 
@@ -221,4 +223,92 @@ test('the clock converts milliseconds to seconds', () => {
   assert.equal(nowSeconds(() => 1_800_000_000_000), 1_800_000_000n);
   assert.equal(nowSeconds(() => 1_800_000_000_999), 1_800_000_000n);
   assert.equal(nowSeconds(() => 0), 0n);
+});
+
+// A mock that only ever succeeds leaves every failure path untested: no
+// settlement ever reaches a failed state, the ledger never proves it writes
+// nothing for one, and the dashboard's failed column stays zero while its
+// filter claims to work.
+test('fault injection stays unavailable unless a deployment opts in', async () => {
+  const response = await handle('GET', ROUTE.Fault, null, { nonces: new NonceLedger() });
+
+  assert.equal(response.status, 404);
+});
+
+test('an armed fault reports itself on the health endpoint', async () => {
+  const fault: FaultState = { mode: FAULT.None };
+
+  await handle('POST', ROUTE.Fault, { mode: FAULT.SettleFails } as never, {
+    nonces: new NonceLedger(),
+    fault,
+  });
+
+  const health = await handle('GET', ROUTE.Health, null, { nonces: new NonceLedger(), fault });
+
+  assert.equal((health.body as { fault: string }).fault, FAULT.SettleFails);
+});
+
+test('an unknown fault mode gets refused rather than silently armed', async () => {
+  const fault: FaultState = { mode: FAULT.None };
+
+  const response = await handle('POST', ROUTE.Fault, { mode: 'explode' } as never, {
+    nonces: new NonceLedger(),
+    fault,
+  });
+
+  assert.equal(response.status, 400);
+  // A mode that failed to arm must leave the previous one in place rather than
+  // clearing it, or a typo would quietly disable an injection under test.
+  assert.equal(fault.mode, FAULT.None);
+});
+
+test('the unavailable fault answers 503 on both verify and settle', async () => {
+  const fault: FaultState = { mode: FAULT.Unavailable };
+
+  for (const route of [ROUTE.Verify, ROUTE.Settle]) {
+    const response = await handle('POST', route, {} as never, {
+      nonces: new NonceLedger(),
+      fault,
+    });
+
+    assert.equal(response.status, 503, `${route} should report unavailable`);
+  }
+});
+
+test('the verify fault rejects verification while leaving settlement alone', async () => {
+  const fault: FaultState = { mode: FAULT.VerifyRejects };
+
+  const verify = await handle('POST', ROUTE.Verify, {} as never, {
+    nonces: new NonceLedger(),
+    fault,
+  });
+
+  assert.equal(verify.status, 200);
+  assert.equal((verify.body as { isValid: boolean }).isValid, false);
+});
+
+test('the settle fault reports failure rather than throwing', async () => {
+  const fault: FaultState = { mode: FAULT.SettleFails };
+
+  const response = await handle('POST', ROUTE.Settle, {} as never, {
+    nonces: new NonceLedger(),
+    fault,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal((response.body as { success: boolean }).success, false);
+});
+
+test('clearing the fault restores ordinary behaviour', async () => {
+  const fault: FaultState = { mode: FAULT.Unavailable };
+
+  await handle('POST', ROUTE.Fault, { mode: FAULT.None } as never, {
+    nonces: new NonceLedger(),
+    fault,
+  });
+
+  const health = await handle('GET', ROUTE.Health, null, { nonces: new NonceLedger(), fault });
+
+  assert.equal(health.status, 200);
+  assert.equal((health.body as { fault: string }).fault, FAULT.None);
 });

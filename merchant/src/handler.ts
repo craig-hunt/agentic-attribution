@@ -10,6 +10,7 @@ import type { SettlementClient } from './settlement.js';
 import {
   X402_HEADER,
   decodeAssertionHeader,
+  MalformedPaymentError,
   decodePaymentHeader,
   encodeHeaderJson,
   type PaymentPayload,
@@ -137,7 +138,17 @@ export class PurchaseHandler {
     try {
       assertion = decodeAssertionHeader(assertionHeader);
       payment = decodePaymentHeader(paymentHeader);
-    } catch {
+    } catch (error) {
+      // A payload that decodes but carries the wrong shape earns its own
+      // reason. Reporting it as a base64 failure would send whoever reads the
+      // log looking at their encoding rather than at their field names.
+      if (error instanceof MalformedPaymentError) {
+        return {
+          status: HTTP_STATUS.BadRequest,
+          body: { error: error.message, reason: error.reason },
+        };
+      }
+
       return {
         status: HTTP_STATUS.BadRequest,
         body: { error: 'headers are not base64-encoded JSON', reason: 'malformed_headers' },

@@ -319,3 +319,77 @@ test('malformed headers are rejected without throwing', async () => {
   assert.equal(response.status, HTTP_STATUS.BadRequest);
   assert.equal((response.body as { reason: string }).reason, 'malformed_headers');
 });
+
+// A cast is a claim TypeScript cannot keep at runtime. Before this validation
+// existed, a payload missing its authorization reached a dereference and the
+// merchant answered 502 carrying a JavaScript runtime message, which told a
+// caller the implementation language and suggested the merchant broke rather
+// than the request did.
+test('a payment payload carrying no authorization earns a 400 rather than a crash', async () => {
+  const response = await handlerWith(fakeCatalog(listing)).handle(
+    { product_id: listing.productId },
+    {
+      [X402_HEADER.PaymentSignature]: encodeHeaderJson({}),
+      [X402_HEADER.AttributionAssertion]: encodeHeaderJson(fixture.assertion),
+    },
+    at,
+  );
+
+  assert.equal(response.status, HTTP_STATUS.BadRequest);
+  assert.equal((response.body as { reason: string }).reason, 'malformed_payment');
+});
+
+test('a payment payload missing any authorization field earns a 400', async () => {
+  for (const omitted of ['from', 'to', 'value', 'validAfter', 'validBefore', 'nonce']) {
+    const authorization = { ...payment().authorization } as Record<string, unknown>;
+    delete authorization[omitted];
+
+    const response = await handlerWith(fakeCatalog(listing)).handle(
+      { product_id: listing.productId },
+      {
+        [X402_HEADER.PaymentSignature]: encodeHeaderJson({ ...payment(), authorization }),
+        [X402_HEADER.AttributionAssertion]: encodeHeaderJson(fixture.assertion),
+      },
+      at,
+    );
+
+    assert.equal(response.status, HTTP_STATUS.BadRequest, `omitting ${omitted} should refuse`);
+    assert.equal(
+      (response.body as { reason: string }).reason,
+      'malformed_payment',
+      `omitting ${omitted} should name the payload`,
+    );
+  }
+});
+
+test('a payment payload carrying no signature earns a 400', async () => {
+  const { signature: _dropped, ...unsigned } = payment();
+
+  const response = await handlerWith(fakeCatalog(listing)).handle(
+    { product_id: listing.productId },
+    {
+      [X402_HEADER.PaymentSignature]: encodeHeaderJson(unsigned),
+      [X402_HEADER.AttributionAssertion]: encodeHeaderJson(fixture.assertion),
+    },
+    at,
+  );
+
+  assert.equal(response.status, HTTP_STATUS.BadRequest);
+  assert.equal((response.body as { reason: string }).reason, 'malformed_payment');
+});
+
+// A malformed payload must never leak how the merchant is built.
+test('a malformed payment names the field rather than a runtime error', async () => {
+  const response = await handlerWith(fakeCatalog(listing)).handle(
+    { product_id: listing.productId },
+    {
+      [X402_HEADER.PaymentSignature]: encodeHeaderJson({ authorization: {}, signature: 'x' }),
+      [X402_HEADER.AttributionAssertion]: encodeHeaderJson(fixture.assertion),
+    },
+    at,
+  );
+
+  const message = (response.body as { error: string }).error;
+  assert.ok(!message.includes('Cannot read properties'), `leaked a runtime error: ${message}`);
+  assert.match(message, /authorization\./);
+});

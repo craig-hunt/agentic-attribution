@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The compose file interpolates the signing keypair, and every service
       # that verifies an assertion needs the public half. Generated per run:
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # OpenSearch refuses to start without it, and the runner default is far
       # below what a single node needs.
@@ -52,6 +52,54 @@ jobs:
 
       # Compose swallows a crashed dependency behind whatever error the caller
       # happened to see, so the logs matter more than the failure line.
+      - name: Service logs
+        if: failure()
+        run: make logs-once ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Tear down
+        if: always()
+        run: make clean ENV_FILE=$RUNNER_TEMP/env
+
+  # The regression suite, in a container so the runner needs no browser
+  # libraries and no Cypress binary of its own. Separate from the smoke gate
+  # because it seeds a full catalog and takes minutes rather than seconds.
+  e2e:
+    name: Cypress regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Raise vm.max_map_count
+        run: sudo sysctl -w vm.max_map_count=262144
+
+      - name: Generate a signing keypair
+        run: make keys ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Use the Node the manifests require
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: cypress-tests/package-lock.json
+
+      # Lint, formatting, and types need no browser, so they fail fast before
+      # anything spends minutes seeding a catalog.
+      - name: Verify the suite itself
+        working-directory: cypress-tests
+        run: npm ci && npm run verify
+
+      - name: Seed and run the suite
+        run: make e2e-cold ENV_FILE=$RUNNER_TEMP/env
+
+      - name: Screenshots from failed specs
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: cypress-screenshots
+          path: cypress-tests/cypress/screenshots
+          if-no-files-found: ignore
+
       - name: Service logs
         if: failure()
         run: make logs-once ENV_FILE=$RUNNER_TEMP/env

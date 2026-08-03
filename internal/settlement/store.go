@@ -218,11 +218,11 @@ func (s *Store) Fail(ctx context.Context, settlementID string) error {
 // tampered signatures, expired assertions, and replays, and until now a log
 // line was the only evidence any of it happened.
 type Rejection struct {
-	PublisherID string
-	AssertionID string
-	MerchantID  string
-	Reason      string
-	Detail      string
+	PublisherID string `json:"publisher_id"`
+	AssertionID string `json:"assertion_id"`
+	MerchantID  string `json:"merchant_id"`
+	Reason      string `json:"reason"`
+	Detail      string `json:"detail"`
 }
 
 // RecordRejection writes a refused attempt. It deliberately returns no error to

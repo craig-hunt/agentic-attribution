@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help keys require-cwd require-keys up seed demo smoke smoke-cold dashboard down clean logs logs-once ps test test-docker test-go test-ts test-php mutate mutate-docker mutate-go mutate-ts mutate-php lint fixture
+.PHONY: help keys require-cwd require-keys up seed demo smoke smoke-cold e2e e2e-open e2e-cold dashboard down clean logs logs-once ps test test-docker test-go test-ts test-php mutate mutate-docker mutate-go mutate-ts mutate-php lint fixture
 
 # Key material lives outside the working tree, and the Makefile passes its
 # location to compose explicitly rather than relying on the ./.env compose
@@ -82,6 +82,33 @@ smoke-cold: require-cwd require-keys
 	$(MAKE) seed
 	$(MAKE) smoke
 
+## e2e: run the Cypress regression suite in a container, needing only Docker
+e2e: require-cwd require-keys
+	$(COMPOSE) --profile e2e run --rm --build cypress
+
+## e2e-open: run the suite in the interactive Cypress runner, in a container
+#
+# Needs a display the container can reach. WSLg provides one on Windows 11 and
+# any X server does on Linux. Nothing gets installed on the host: the image
+# carries the browsers and their libraries.
+e2e-open: require-cwd require-keys
+	@test -n "$$DISPLAY" || { \
+		echo "No DISPLAY set, so the container has nowhere to draw."; \
+		echo ""; \
+		echo "On Windows 11, WSLg supplies one and DISPLAY is set for you."; \
+		echo "On Linux, run this from a desktop session."; \
+		echo "Otherwise use 'make e2e', which runs headless."; \
+		exit 1; \
+	}
+	$(COMPOSE) --profile e2e-open run --rm --build --service-ports cypress-open
+
+## e2e-cold: seed from empty, then run the regression suite
+e2e-cold: require-cwd require-keys
+	$(MAKE) clean
+	$(MAKE) up
+	$(MAKE) seed
+	$(MAKE) e2e
+
 ## dashboard: open the publisher dashboard
 dashboard:
 	@echo "http://localhost:8000"
@@ -100,11 +127,11 @@ logs-once: require-cwd
 
 ## down: stop every service, keeping the data
 down: require-cwd
-	$(COMPOSE) --profile seed --profile demo --profile smoke down
+	$(COMPOSE) --profile seed --profile demo --profile smoke --profile e2e --profile e2e-open down
 
 ## clean: stop everything and delete the volumes, so the next seed starts empty
 clean: require-cwd
-	$(COMPOSE) --profile seed --profile demo --profile smoke down -v
+	$(COMPOSE) --profile seed --profile demo --profile smoke --profile e2e --profile e2e-open down -v
 
 ## test-docker: run every suite in containers, needing only Docker
 test-docker: require-cwd require-keys

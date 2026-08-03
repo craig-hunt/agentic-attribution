@@ -1,0 +1,38 @@
+{
+  "name": "agentic-attribution-cypress-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end regression suite for agentic-attribution, following the conventions in github.com/craig-hunt/cypress-standards.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.50.0",
+    "@typescript-eslint/parser": "^8.50.0",
+    "cypress": "^14.5.4",
+    "dotenv": "^17.2.3",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-cypress": "^5.2.0",
+    "eslint-plugin-prettier": "^5.5.4",
+    "globals": "^15.15.0",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "viem": "^2.21.0"
+  },
+  "scripts": {
+    "cypress:open": "cypress open",
+    "cypress:run": "cypress run",
+    "cypress:single": "cypress run",
+    "format": "prettier --write \"**/*.{js,ts,json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,ts,json,md}\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit --project cypress/tsconfig.json",
+    "verify": "npm run lint && npm run format:check && npm run typecheck",
+    "test": "npm run verify && npm run cypress:run"
+  },
+  "allowScripts": {
+    "cypress@14.5.4": true
+  }
+}

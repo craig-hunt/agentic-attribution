@@ -347,8 +347,13 @@ below rather than taking them on trust.
 ```bash
 make smoke-cold       # empty volumes through to a verified purchase
 make test-docker      # Go, TypeScript, and PHP suites in containers
+make e2e              # Cypress regression suite in a container, headless
+make e2e-open         # the same suite, in a browser you can watch
 make mutate-docker    # Stryker and Infection in containers
 ```
+
+Every one of those needs Docker and nothing else. `make e2e` carries its own
+browser, so no Cypress binary and no browser libraries land on your machine.
 
 ### The gate that matters most
 
@@ -388,6 +393,108 @@ make test             # every suite
 make mutate           # gremlins, Stryker, and Infection
 make lint             # gofmt, tsc, php -l
 ```
+
+### End-to-end regression
+
+The Cypress suite lives in [`cypress-tests/`](cypress-tests/) and follows the
+conventions in [cypress-standards](https://github.com/craig-hunt/cypress-standards):
+three-layer separation, no magic strings, and `data-testid` reached through
+`cy.getByTestId()` as the only sanctioned selector.
+
+**Headless, needing only Docker:**
+
+```bash
+make e2e         # headless, against a stack already seeded and running
+make e2e-open    # interactive runner on your desktop, still in a container
+make e2e-cold    # wipe, start, seed, then run the suite headless
+```
+
+The container joins the compose network and reaches services by name, which is
+also how it reaches the driver, since that service publishes no port and the
+dashboard proxies to it.
+
+**Headed, watching the browser work:**
+
+```bash
+make e2e-open
+```
+
+The interactive runner opens on your desktop, from inside the container. Pick
+**E2E Testing**, choose Chrome, Firefox, or Electron, and click a spec. Specs
+bind-mount rather than copy, so editing one reruns it without rebuilding
+anything.
+
+**Nothing gets installed on your machine for this.** The image carries the
+browsers and every library they need. What it borrows is somewhere to draw:
+`make e2e-open` mounts the X socket, which WSLg supplies on Windows 11 and any
+desktop session supplies on Linux. The target checks `DISPLAY` first and says
+so plainly rather than failing inside Cypress.
+
+To watch a run rather than drive one:
+
+```bash
+docker compose --profile e2e-open run --rm --entrypoint sh cypress-open \
+  -c 'npx cypress run --headed --browser chrome'
+```
+
+**On the host instead**, if you would rather not go through Docker:
+
+```bash
+cd cypress-tests
+npm ci
+npm run cypress:open     # interactive runner, time travel, DOM snapshots
+npm run cypress:run      # headless on the host
+npm run verify           # eslint, prettier, and tsc without running a browser
+```
+
+**`npm run verify` needs no browser**, so lint, formatting, and types check on
+any machine.
+
+The two commands that launch one need a browser and its libraries. Windows and
+macOS carry those already, so `cypress open` works from PowerShell or a mac
+terminal with no extra setup. A minimal WSL install does not, and
+[`RUNNING.md`](docs/RUNNING.md) lists what to add there. Both container targets
+sidestep all of it.
+
+Run one spec while iterating. Arguments pass through after `--`, which behaves
+the same in bash, PowerShell, and cmd:
+
+```bash
+npm run cypress:single -- --spec "cypress/support/test_cases/fraud/replayedAssertion.ts"
+```
+
+**What it covers.** The seven flows [ADR-0006](docs/adr/0006-testing-strategy.md)
+commits to, plus an OWASP pass. The suite drives the dashboard's own controls to
+create the activity it asserts on, and asserts deltas rather than absolute
+totals, because a live population keeps settling while a spec runs.
+
+Protocol-level flows go through the gateway directly with `cy.request`, since an
+assertion refused at the edge never reaches a page. The replay spec signs a
+genuine EIP-3009 authorization, because the single-use check sits behind
+facilitator verification and a junk payment would be refused for the wrong
+reason.
+
+### OWASP coverage, and its limits
+
+| | Covered | How |
+|---|---|---|
+| A01 Broken Access Control | Yes | Unknown and traversed identifiers, cross-publisher reads |
+| A02 Cryptographic Failures | Yes | Signed assertions, bounded lifetimes, no key material in responses |
+| A03 Injection | Yes | SQL metacharacters in identifiers and queries, stored XSS through rendered data |
+| A04 Insecure Design | Partly | Single use, expiry, and a signed rate, carried by the fraud specs |
+| A05 Security Misconfiguration | Yes | Handled error pages, no stack traces, no directory listing, no source disclosure |
+| A06 Vulnerable Components | **No** | `npm audit` and `govulncheck` in CI. No browser test can assess this |
+| A07 Authentication Failures | Documented | The app carries no authentication by design; the specs assert that posture and name it |
+| A08 Data Integrity Failures | Yes | Swapped products, rewritten search bindings, immutable recorded splits |
+| A09 Logging Failures | Yes | Every refusal persists with its reason and reaches the publisher page |
+| A10 Server-Side Request Forgery | **No** | No endpoint accepts a URL; upstreams come from environment rather than requests |
+
+**A07 deserves a note.** Nothing here authenticates anything, and the A07 specs
+assert what is true rather than what should be. A suite that fails on purpose,
+every run, teaches a team to ignore its own colour, which is the failure
+[ADR-0006](docs/adr/0006-testing-strategy.md) warns about for brittle selectors.
+The finding lives in the test names and in
+[`PRODUCTIONALIZING.md`](docs/PRODUCTIONALIZING.md) instead.
 
 ### Mutation scores
 
@@ -466,6 +573,7 @@ database, and skips only when the machine offers neither Docker nor
 | [DATA_GENERATION.md](docs/DATA_GENERATION.md) | Why synthetic, and the multi-merchant duplication model |
 | [PRODUCTIONALIZING.md](docs/PRODUCTIONALIZING.md) | What a team adds to ship this for real |
 | [RUNNING.md](docs/RUNNING.md) | Local and deployed setup |
+| [cypress-tests/](cypress-tests/) | End-to-end regression suite, and how to run it headless or headed |
 | [ADRs](docs/adr/) | Every non-obvious decision, with alternatives considered |
 
 ---
