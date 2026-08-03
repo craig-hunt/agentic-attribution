@@ -136,6 +136,12 @@ services:
     command: ["npx", "tsx", "facilitator/src/index.ts"]
     environment:
       FACILITATOR_PORT: "8095"
+      # Off unless something asks for it. The control carries no
+      # authentication, and neither does anything else here, so a caller
+      # reaching it could set `unavailable` and stop every settlement on the
+      # platform. The e2e targets turn it on for their own run; a
+      # demonstration someone is merely running never needs it.
+      FACILITATOR_FAULT_INJECTION: ${FACILITATOR_FAULT_INJECTION:-false}
     ports:
       - "8095:8095"
 

@@ -19,6 +19,12 @@ make e2e-cold    # wipe, start, seed, then run headless
 
 Run those from the repository root, not from here.
 
+The `e2e` targets restart the facilitator with `FACILITATOR_FAULT_INJECTION`
+enabled, because three specs exercise failure paths a facilitator that only
+succeeds can never produce. It stays off everywhere else: the control has no
+authentication in front of it, so leaving it reachable would hand any caller a
+way to halt settlement.
+
 `make e2e-open` needs somewhere to draw. WSLg supplies a display on Windows 11
 and a desktop session supplies one on Linux. The target checks `DISPLAY` first
 and says so plainly rather than failing several layers inside Cypress.

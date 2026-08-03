@@ -10,6 +10,8 @@ import {
 } from '@agentic-attribution/types';
 import { privateKeyToAccount } from 'viem/accounts';
 
+import type { VerifyOutcome } from './verify.js';
+
 import {
   NonceLedger,
   ROUTE,
@@ -311,4 +313,98 @@ test('clearing the fault restores ordinary behaviour', async () => {
 
   assert.equal(health.status, 200);
   assert.equal((health.body as { fault: string }).fault, FAULT.None);
+});
+
+// The control carries no authentication, and neither does anything else on
+// this platform, so a caller reaching it could set `unavailable` and stop
+// every settlement. Absent options.fault it must not exist at all: answering
+// with a disabled state would still tell a caller the control is there.
+test('every fault route stays absent unless a deployment opts in', async () => {
+  for (const method of ['GET', 'POST']) {
+    const response = await handle(method, ROUTE.Fault, { mode: FAULT.Unavailable } as never, {
+      nonces: new NonceLedger(),
+    });
+
+    assert.equal(response.status, 404, `${method} /fault should not exist`);
+
+    // The body matters as much as the status. One naming the control would
+    // tell a caller it exists and is merely disabled, which is what gating it
+    // was meant to withhold.
+    assert.deepEqual(response.body, { error: 'not found' });
+  }
+});
+
+// Each of these reaches verification outside a try/catch: two through
+// sameAddress and one through BigInt. Checking that paymentRequirements was an
+// object and stopping there left all three to throw and surface as a 500.
+test('requirement fields verification dereferences are refused', async () => {
+  const cases: Array<[string, unknown]> = [
+    ['asset', undefined],
+    ['asset', 42],
+    ['payTo', undefined],
+    ['maxAmountRequired', undefined],
+    ['maxAmountRequired', 'not-a-number'],
+    ['maxAmountRequired', '12.5'],
+  ];
+
+  for (const [field, value] of cases) {
+    const body = await request();
+    (body.paymentRequirements as unknown as Record<string, unknown>)[field] = value;
+
+    const response = await handle('POST', ROUTE.Verify, body, options());
+
+    assert.equal(response.status, 400, `${field}=${String(value)} should be refused`);
+    assert.equal(
+      (response.body as { reason: string }).reason,
+      'malformed_request',
+      `${field}=${String(value)} should be named a malformed request`,
+    );
+  }
+});
+
+test('verification stays unaffected while injection is off', async () => {
+  // Drives a genuine signed request rather than an empty body. An empty one
+  // is refused by request validation before injection is ever consulted, so it
+  // would pass whether the control was removed or merely hidden.
+  const response = await handle('POST', ROUTE.Verify, await request(), {
+    nonces: new NonceLedger(),
+    clock,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal((response.body as VerifyOutcome).isValid, true);
+});
+
+// A malformed body reached a dereference and threw, and the throw terminated
+// the process rather than answering. Nothing authenticates this endpoint, so
+// one curl command stopped every settlement on the platform.
+test('a malformed request earns a 400 rather than throwing', async () => {
+  const bodies: unknown[] = [
+    null,
+    {},
+    { paymentPayload: null, paymentRequirements: {} },
+    { paymentPayload: {}, paymentRequirements: null },
+    { paymentPayload: {}, paymentRequirements: {} },
+    { paymentPayload: { authorization: null }, paymentRequirements: {} },
+  ];
+
+  for (const route of [ROUTE.Verify, ROUTE.Settle]) {
+    for (const body of bodies) {
+      const response = await handle('POST', route, body as never, { nonces: new NonceLedger() });
+
+      assert.equal(
+        response.status,
+        400,
+        `${route} with ${JSON.stringify(body)} should refuse rather than throw`,
+      );
+      assert.equal((response.body as { reason: string }).reason, 'malformed_request');
+    }
+  }
+});
+
+test('a malformed request leaks no runtime error', async () => {
+  const response = await handle('POST', ROUTE.Verify, {} as never, { nonces: new NonceLedger() });
+  const message = (response.body as { error: string }).error;
+
+  assert.ok(!message.includes('Cannot read properties'), `leaked a runtime error: ${message}`);
 });

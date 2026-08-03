@@ -130,6 +130,30 @@ describe('Every refusal path the platform can take', () => {
 // Paths a healthy facilitator never produces, so a mock that only succeeds
 // leaves them untested forever.
 describe('Failure paths, with a fault injected', () => {
+  // These specs need the facilitator started with FACILITATOR_FAULT_INJECTION
+  // enabled, which the e2e make targets do. Without it /fault answers 404 and
+  // every assertion below fails on a status nobody would connect to a missing
+  // environment variable.
+  //
+  // Checked once, loudly, rather than skipped. A suite that quietly skips
+  // reports green while covering less than it claims, which is the failure
+  // ADR-0006 warns about.
+  before(() => {
+    driverActions.setFault(Faults.None).then((response) => {
+      if (response.status !== HttpStatus.Ok) {
+        // Thrown rather than asserted. A chai message inside a hook gets
+        // reported against whichever test ran first, where nobody connects it
+        // to a missing environment variable.
+        throw new Error(
+          'Fault injection is off, so these specs cannot run. Start the ' +
+            'facilitator with FACILITATOR_FAULT_INJECTION=true, which both ' +
+            '`make e2e` and `make e2e-open` already do. ' +
+            `POST /fault answered ${response.status}.`
+        );
+      }
+    });
+  });
+
   afterEach(() => {
     // Cleared unconditionally. A fault left armed turns every later spec red
     // for a reason none of them describe.
