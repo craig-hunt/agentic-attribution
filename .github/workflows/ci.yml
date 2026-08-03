@@ -85,8 +85,16 @@ jobs:
 
       # Lint, formatting, and types need no browser, so they fail fast before
       # anything spends minutes seeding a catalog.
+      #
+      # The binary stays undownloaded here for the same reason
+      # docker/cypress.Dockerfile skips it: the specs run inside
+      # cypress/included, which already carries it. Downloading it anyway put a
+      # vendor CDN on the critical path of every run, and a 502 from that CDN
+      # failed the job before a single spec started.
       - name: Verify the suite itself
         working-directory: cypress-tests
+        env:
+          CYPRESS_INSTALL_BINARY: 0
         run: npm ci && npm run verify
 
       - name: Seed and run the suite
@@ -94,7 +102,7 @@ jobs:
 
       - name: Screenshots from failed specs
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: cypress-screenshots
           path: cypress-tests/cypress/screenshots
