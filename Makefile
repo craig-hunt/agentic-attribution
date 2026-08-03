@@ -83,7 +83,13 @@ smoke-cold: require-cwd require-keys
 	$(MAKE) smoke
 
 ## e2e: run the Cypress regression suite in a container, needing only Docker
+#
+# The facilitator restarts with fault injection enabled, because three specs
+# exercise failure paths a facilitator that only succeeds can never produce.
+# The control stays off everywhere else: it carries no authentication, so
+# leaving it reachable would hand any caller a way to halt settlement.
 e2e: require-cwd require-keys
+	FACILITATOR_FAULT_INJECTION=true $(COMPOSE) up -d facilitator
 	$(COMPOSE) --profile e2e run --rm --build cypress
 
 ## e2e-open: run the suite in the interactive Cypress runner, in a container
@@ -92,6 +98,7 @@ e2e: require-cwd require-keys
 # any X server does on Linux. Nothing gets installed on the host: the image
 # carries the browsers and their libraries.
 e2e-open: require-cwd require-keys
+	@FACILITATOR_FAULT_INJECTION=true $(COMPOSE) up -d facilitator
 	@test -n "$$DISPLAY" || { \
 		echo "No DISPLAY set, so the container has nowhere to draw."; \
 		echo ""; \

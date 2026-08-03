@@ -41,23 +41,59 @@ async function readJson(req: IncomingMessage): Promise<FacilitatorRequest | null
   }
 }
 
-// Injected faults live for the lifetime of the process. A test arms one,
-// asserts, and clears it, which needs no restart and disturbs nothing else.
-const fault: FaultState = { mode: FAULT.None };
+/**
+ * Fault injection stays off unless a deployment asks for it.
+ *
+ * The control has no authentication in front of it, and neither does anything
+ * else here, so leaving it reachable by default would hand any caller a way to
+ * set `unavailable` and stop every settlement on the platform. A regression
+ * suite needs it; a demonstration someone is merely running does not.
+ *
+ * Off means /fault answers 404 rather than answering with a disabled state,
+ * because a control that exists and refuses still tells a caller it is there.
+ *
+ * Injected faults live for the lifetime of the process. A test arms one,
+ * asserts, and clears it, which needs no restart and disturbs nothing else.
+ */
+const faultInjectionEnabled =
+  process.env['FACILITATOR_FAULT_INJECTION']?.trim().toLowerCase() === 'true';
+
+const fault: FaultState | undefined = faultInjectionEnabled
+  ? { mode: FAULT.None }
+  : undefined;
 
 const server = createServer((req, res) => {
   void (async () => {
-    const body = req.method === 'POST' ? await readJson(req) : null;
+    // Every failure gets caught here. An unhandled rejection inside this
+    // async function terminates the process, so a single malformed request
+    // would stop the facilitator and with it every settlement on the
+    // platform. Nothing authenticates this endpoint, which makes that one
+    // curl command away.
+    try {
+      const body = req.method === 'POST' ? await readJson(req) : null;
 
-    const response = await handle(req.method ?? 'GET', req.url ?? '/', body, {
-      nonces,
-      fault,
-      onSettled: (record) => {
-        console.log(JSON.stringify({ level: 'info', msg: 'settled', ...record }));
-      },
-    });
+      const response = await handle(req.method ?? 'GET', req.url ?? '/', body, {
+        nonces,
+        // Passing undefined leaves /fault answering 404, which is the whole
+        // mechanism rather than a detail of it.
+        ...(fault ? { fault } : {}),
+        onSettled: (record) => {
+          console.log(JSON.stringify({ level: 'info', msg: 'settled', ...record }));
+        },
+      });
 
-    writeJson(res, response.status, response.body);
+      writeJson(res, response.status, response.body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+
+      console.error(
+        JSON.stringify({ level: 'error', msg: 'facilitator request failed', error: message }),
+      );
+
+      if (!res.headersSent) {
+        writeJson(res, 500, { error: 'facilitator error', reason: 'facilitator_error' });
+      }
+    }
   })();
 });
 
@@ -74,6 +110,7 @@ server.listen(port, () => {
       level: 'warn',
       msg: 'mock facilitator listening; no value moves on chain',
       port,
+      fault_injection: faultInjectionEnabled,
     }),
   );
 });

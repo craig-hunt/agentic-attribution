@@ -18,6 +18,23 @@ mTLS client certificates. Not an allowlist, and not "it sits behind a
 perimeter", because defence in depth demands HTTP-layer auth even where
 network exposure supposedly stays limited.
 
+**Fault injection ships disabled and must stay that way.** The mock
+facilitator accepts a mode that stops it answering, which a regression suite
+needs and nothing else does. `FACILITATOR_FAULT_INJECTION` gates it, the
+default leaves `/fault` answering 404 rather than answering with a disabled
+state, and only the `e2e` targets turn it on. Enabling it on anything reachable
+would hand an unauthenticated caller a way to halt every settlement.
+
+**Validate at every boundary, not at the one that was easiest to find.** Three
+services took a decoded JSON body and read fields from it without checking the
+shape. In TypeScript a cast is a claim the runtime never keeps. The merchant
+answered 502 carrying a JavaScript error message, and the facilitator threw
+inside an async handler with no catch, which terminated the process: a single
+unauthenticated request stopped every settlement on the platform. Both now
+validate before any field access and answer 400. Anything added later that
+accepts a payload needs the same treatment, and a `catch` that turns an
+unexpected throw into a response rather than an exit.
+
 **The driver's control endpoints need authentication before anything deploys.**
 `POST /start` spawns concurrent agents against the platform, and nothing
 authenticates the caller. Today the driver publishes no host port and the

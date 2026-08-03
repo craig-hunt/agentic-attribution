@@ -191,6 +191,15 @@ export async function handle(
     return { status: 404, body: { error: 'not found' } };
   }
 
+  // Validated before anything reads a field. A body missing its payload
+  // reached a dereference and threw, and the throw terminated the process
+  // rather than answering, which made one malformed request enough to stop
+  // every settlement on the platform.
+  const malformed = describeMalformedRequest(body);
+  if (malformed !== null) {
+    return { status: 400, body: { error: malformed, reason: 'malformed_request' } };
+  }
+
   if (body === null) {
     return { status: 400, body: { error: 'malformed request body' } };
   }
@@ -233,4 +242,34 @@ export async function handle(
       payer: outcome.payer,
     },
   };
+}
+
+/**
+ * Reports what is wrong with a facilitator request, or null when it carries
+ * the fields every path here goes on to read.
+ *
+ * A caller reaching this endpoint is unauthenticated, so the check has to
+ * happen before any field access rather than being left to the callers.
+ */
+function describeMalformedRequest(body: FacilitatorRequest | null): string | null {
+  if (body === null || typeof body !== 'object') {
+    return 'request body is not an object';
+  }
+
+  const payload = body.paymentPayload as unknown;
+  if (typeof payload !== 'object' || payload === null) {
+    return 'request carries no paymentPayload';
+  }
+
+  const requirements = body.paymentRequirements as unknown;
+  if (typeof requirements !== 'object' || requirements === null) {
+    return 'request carries no paymentRequirements';
+  }
+
+  const authorization = (payload as { authorization?: unknown }).authorization;
+  if (typeof authorization !== 'object' || authorization === null) {
+    return 'paymentPayload carries no authorization';
+  }
+
+  return null;
 }
