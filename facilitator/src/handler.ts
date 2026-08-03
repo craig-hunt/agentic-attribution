@@ -138,8 +138,11 @@ export async function handle(
   // Reading and setting the injected fault. A GET answers what is armed, and a
   // POST arms or clears it.
   if (path === ROUTE.Fault) {
+    // The same body every unknown route answers with. Naming the control
+    // here would tell a caller it exists and is merely disabled, which is the
+    // disclosure gating it was meant to prevent.
     if (!options.fault) {
-      return { status: 404, body: { error: 'fault injection unavailable' } };
+      return { status: 404, body: { error: 'not found' } };
     }
 
     if (method === 'GET') {
@@ -195,18 +198,15 @@ export async function handle(
   // reached a dereference and threw, and the throw terminated the process
   // rather than answering, which made one malformed request enough to stop
   // every settlement on the platform.
-  const malformed = describeMalformedRequest(body);
-  if (malformed !== null) {
-    return { status: 400, body: { error: malformed, reason: 'malformed_request' } };
+  const validation = validateRequest(body);
+  if (!validation.ok) {
+    return { status: 400, body: { error: validation.error, reason: 'malformed_request' } };
   }
-
-  if (body === null) {
-    return { status: 400, body: { error: 'malformed request body' } };
-  }
+  const request = validation.request;
 
   const outcome = await verifyPayment(
-    body.paymentPayload,
-    body.paymentRequirements,
+    request.paymentPayload,
+    request.paymentRequirements,
     nowSeconds(options.clock),
   );
 
@@ -218,7 +218,7 @@ export async function handle(
     return { status: 200, body: { success: false, errorReason: outcome.invalidReason } };
   }
 
-  const authorization = body.paymentPayload.authorization;
+  const authorization = request.paymentPayload.authorization;
 
   if (!options.nonces.claim(authorization.nonce)) {
     return { status: 200, body: { success: false, errorReason: 'nonce_already_used' } };
@@ -238,38 +238,70 @@ export async function handle(
     body: {
       success: true,
       transaction,
-      network: body.paymentPayload.network,
+      network: request.paymentPayload.network,
       payer: outcome.payer,
     },
   };
 }
 
 /**
- * Reports what is wrong with a facilitator request, or null when it carries
- * the fields every path here goes on to read.
+ * Answers with the validated request, or with what is wrong with it.
+ *
+ * Returning the request rather than a bare error string is what keeps the
+ * check honest: the caller cannot read a field without having gone through
+ * here, so a field added to the read path and forgotten here fails to compile
+ * rather than throwing in production.
  *
  * A caller reaching this endpoint is unauthenticated, so the check has to
- * happen before any field access rather than being left to the callers.
+ * happen before any field access.
  */
-function describeMalformedRequest(body: FacilitatorRequest | null): string | null {
+function validateRequest(body: FacilitatorRequest | null): RequestValidation {
   if (body === null || typeof body !== 'object') {
-    return 'request body is not an object';
+    return { ok: false, error: 'request body is not an object' };
   }
 
   const payload = body.paymentPayload as unknown;
   if (typeof payload !== 'object' || payload === null) {
-    return 'request carries no paymentPayload';
+    return { ok: false, error: 'request carries no paymentPayload' };
   }
 
   const requirements = body.paymentRequirements as unknown;
   if (typeof requirements !== 'object' || requirements === null) {
-    return 'request carries no paymentRequirements';
+    return { ok: false, error: 'request carries no paymentRequirements' };
   }
 
   const authorization = (payload as { authorization?: unknown }).authorization;
   if (typeof authorization !== 'object' || authorization === null) {
-    return 'paymentPayload carries no authorization';
+    return { ok: false, error: 'paymentPayload carries no authorization' };
   }
 
-  return null;
+  for (const field of THROWING_REQUIREMENT_FIELDS) {
+    if (typeof (requirements as Record<string, unknown>)[field] !== 'string') {
+      return { ok: false, error: `paymentRequirements.${field} is missing or not a string` };
+    }
+  }
+
+  // Read through BigInt during verification, which throws a SyntaxError on a
+  // non-numeric string rather than failing the comparison it appears in.
+  const amount = (requirements as { maxAmountRequired: string }).maxAmountRequired;
+  if (!DECIMAL_INTEGER.test(amount)) {
+    return { ok: false, error: 'paymentRequirements.maxAmountRequired is not a decimal integer' };
+  }
+
+  return { ok: true, request: body };
 }
+
+type RequestValidation = { ok: true; request: FacilitatorRequest } | { ok: false; error: string };
+
+/**
+ * The requirement fields verification reads outside a try/catch.
+ *
+ * The payload's own fields are absent here on purpose: verification already
+ * wraps the calls that read them, so a bad one answers `malformed_payload`
+ * with a 200. Refusing those here instead would move a documented protocol
+ * outcome to a 400 and change what the platform reports.
+ */
+const THROWING_REQUIREMENT_FIELDS = ['asset', 'payTo', 'maxAmountRequired'] as const;
+
+const DECIMAL_INTEGER = /^\d+$/;
+

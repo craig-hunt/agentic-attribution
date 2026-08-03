@@ -10,6 +10,8 @@ import {
 } from '@agentic-attribution/types';
 import { privateKeyToAccount } from 'viem/accounts';
 
+import type { VerifyOutcome } from './verify.js';
+
 import {
   NonceLedger,
   ROUTE,
@@ -324,15 +326,53 @@ test('every fault route stays absent unless a deployment opts in', async () => {
     });
 
     assert.equal(response.status, 404, `${method} /fault should not exist`);
+
+    // The body matters as much as the status. One naming the control would
+    // tell a caller it exists and is merely disabled, which is what gating it
+    // was meant to withhold.
+    assert.deepEqual(response.body, { error: 'not found' });
+  }
+});
+
+// Each of these reaches verification outside a try/catch: two through
+// sameAddress and one through BigInt. Checking that paymentRequirements was an
+// object and stopping there left all three to throw and surface as a 500.
+test('requirement fields verification dereferences are refused', async () => {
+  const cases: Array<[string, unknown]> = [
+    ['asset', undefined],
+    ['asset', 42],
+    ['payTo', undefined],
+    ['maxAmountRequired', undefined],
+    ['maxAmountRequired', 'not-a-number'],
+    ['maxAmountRequired', '12.5'],
+  ];
+
+  for (const [field, value] of cases) {
+    const body = await request();
+    (body.paymentRequirements as unknown as Record<string, unknown>)[field] = value;
+
+    const response = await handle('POST', ROUTE.Verify, body, options());
+
+    assert.equal(response.status, 400, `${field}=${String(value)} should be refused`);
+    assert.equal(
+      (response.body as { reason: string }).reason,
+      'malformed_request',
+      `${field}=${String(value)} should be named a malformed request`,
+    );
   }
 });
 
 test('verification stays unaffected while injection is off', async () => {
-  // Proves that turning the control off removes the injection rather than
-  // merely hiding the route that arms it.
-  const response = await handle('POST', ROUTE.Verify, {} as never, { nonces: new NonceLedger() });
+  // Drives a genuine signed request rather than an empty body. An empty one
+  // is refused by request validation before injection is ever consulted, so it
+  // would pass whether the control was removed or merely hidden.
+  const response = await handle('POST', ROUTE.Verify, await request(), {
+    nonces: new NonceLedger(),
+    clock,
+  });
 
-  assert.notEqual(response.status, 503);
+  assert.equal(response.status, 200);
+  assert.equal((response.body as VerifyOutcome).isValid, true);
 });
 
 // A malformed body reached a dereference and threw, and the throw terminated
